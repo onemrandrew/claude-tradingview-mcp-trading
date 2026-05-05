@@ -1,50 +1,208 @@
 {
-  "watchlist": ["BTCUSDT"],
-  "default_timeframe": "1m",
+  "watchlist": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+  "default_timeframe": "4H",
 
   "strategy": {
-    "name": "VWAP + RSI(3) + EMA(8) Scalping Strategy",
-    "sources": ["Lewis Jackson"],
-    "description": "Three indicators, each doing a different job. EMA(8) for trend direction, VWAP for session bias, RSI(3) for entry timing. All three must align before a trade fires."
-  },
-
-  "indicators": {
-    "ema_8": "Trend direction. Price above EMA(8) = bullish momentum. Below = bearish.",
-    "vwap": "Session bias. Price above VWAP = buyers in control. Below = sellers. Resets at midnight UTC.",
-    "rsi_3": "Entry timing. RSI on 3 candles only — extremely sensitive. Below 30 in an uptrend = snap-back setup. Above 70 in a downtrend = reversal likely."
-  },
-
-  "bias_criteria": {
-    "bullish": ["Price is above VWAP", "Price is above EMA(8)"],
-    "bearish": ["Price is below VWAP", "Price is below EMA(8)"]
-  },
-
-  "entry_rules": {
-    "long": [
-      "Price is above VWAP — buyers in control for the session",
-      "Price is above EMA(8) — uptrend confirmed",
-      "RSI(3) has dropped below 30 — short-term pullback in an uptrend, snap-back likely"
+    "name": "Autonomous Multi-Style Strategy — Scalp / Day Trade / Swing with Leverage",
+    "sources": [
+      "Trend-following CTA methodology (AHL / Winton / Man Group)",
+      "Academic research: Bouri et al. 2019, Grobys et al. 2020, Hudson & Urquhart 2021",
+      "21/55 EMA crossover — highest-confidence base signal for BTC",
+      "Daily 200 EMA macro bias filter",
+      "ATR-based dynamic TP/SL"
     ],
-    "short": [
-      "Price is below VWAP — sellers in control",
-      "Price is below EMA(8) — downtrend confirmed",
-      "RSI(3) has spiked above 70 — overbought in a downtrend, reversal likely"
+    "description": "A fully autonomous strategy that selects its own trade style — scalp, day trade, or swing — based on which timeframe produces the highest confidence score. The bot scores 10 conditions per timeframe, picks the best setup, and only enters if confidence reaches 80 or above. It sets its own TP, SL, and leverage automatically. If no timeframe reaches 80, it stays flat. No manual intervention required."
+  },
+
+  "leverage": {
+    "max_leverage": 3,
+    "by_style": {
+      "scalp": 3,
+      "day_trade": 2,
+      "swing": 1
+    },
+    "rules": [
+      "Never exceed MAX_LEVERAGE=3 set in .env under any circumstances",
+      "Leverage is applied to the leveraged position size, not the account — risk per trade remains capped at 1.5% of portfolio regardless of leverage",
+      "If confidence score is exactly 80 (minimum threshold), use the lower leverage for that style",
+      "If confidence score is 90 or above, full leverage for that style may be applied",
+      "Swing trades use 1x leverage — swing positions are held for days and compounding overnight risk does not justify higher leverage"
     ]
   },
 
-  "exit_rules": [
-    "Exit when RSI(3) crosses back above 50 (for longs) or below 50 (for shorts)",
-    "Hard stop: 0.3% below entry for longs, 0.3% above entry for shorts",
-    "Take profit at next VWAP touch or EMA(8) cross"
+  "confidence_threshold": {
+    "minimum_to_trade": 80,
+    "description": "Each of the 10 conditions per timeframe is worth 10 points. Score below 80 = no trade. The bot evaluates all three timeframes and takes the highest-scoring setup if it clears 80. If two timeframes both clear 80, the higher-scoring one wins."
+  },
+
+  "trade_styles": {
+
+    "scalp": {
+      "timeframe": "5m",
+      "confirmation_timeframe": "15m",
+      "leverage": 3,
+      "typical_hold_time": "5 minutes to 2 hours",
+      "description": "Fast, high-conviction setups only. Tight stops, quick exits. The 15m chart must agree with the 5m signal.",
+      "indicators": {
+        "ema_9_5m": "Fast trend. Price above = micro uptrend.",
+        "ema_21_5m": "Slow trend. Crossover with EMA 9 is the scalp entry signal.",
+        "rsi_7_5m": "Fast RSI. Below 20 = oversold (long entry). Above 80 = overbought (short entry).",
+        "macd_5m": "Settings: 6/13/5 (faster than standard for scalping). Histogram positive and rising for longs.",
+        "vwap": "Session bias anchor. Price above VWAP = buy-side pressure. Below = sell-side. Resets at midnight UTC.",
+        "volume_5m": "Must be at least 1.5x the 20-period average — scalp moves need volume behind them.",
+        "atr_7_5m": "Short-period ATR for tight, volatility-adjusted stops."
+      },
+      "stop_loss": "1.0x ATR(7) — tight stop appropriate for scalping",
+      "take_profit_1": "1.0x ATR(7) above entry — 1:1 R:R, close 60% of position",
+      "take_profit_2": "2.0x ATR(7) above entry — 2:1 R:R, close remaining 40%",
+      "stop_after_tp1": "Move stop to breakeven immediately after TP1 is hit",
+      "long_conditions": [
+        "Price is above VWAP — session bias is bullish",
+        "Price is above 200 EMA on the 15m confirmation chart",
+        "EMA 9 has crossed above EMA 21 on the 5m chart",
+        "RSI(7) is below 20 — oversold, snap-back long setup",
+        "MACD(6/13/5) histogram is positive and rising on the 5m chart",
+        "Volume is at least 1.5x the 20-period volume MA",
+        "15m candle closed bullish (green) — higher timeframe agrees",
+        "Price is making a higher low on the 5m chart",
+        "No major resistance within 1.5x ATR(7) above entry",
+        "15m RSI(14) is above 50 — 15m momentum is bullish"
+      ],
+      "short_conditions": [
+        "Price is below VWAP — session bias is bearish",
+        "Price is below 200 EMA on the 15m confirmation chart",
+        "EMA 9 has crossed below EMA 21 on the 5m chart",
+        "RSI(7) is above 80 — overbought, snap-back short setup",
+        "MACD(6/13/5) histogram is negative and falling on the 5m chart",
+        "Volume is at least 1.5x the 20-period volume MA",
+        "15m candle closed bearish (red) — higher timeframe agrees",
+        "Price is making a lower high on the 5m chart",
+        "No major support within 1.5x ATR(7) below entry",
+        "15m RSI(14) is below 50 — 15m momentum is bearish"
+      ]
+    },
+
+    "day_trade": {
+      "timeframe": "1H",
+      "confirmation_timeframe": "4H",
+      "leverage": 2,
+      "typical_hold_time": "2 to 24 hours",
+      "description": "Intraday setups using the 1H chart, confirmed by the 4H trend. Positions are closed within the same day or by the next morning.",
+      "indicators": {
+        "ema_21_1h": "Fast trend on 1H. Primary crossover indicator.",
+        "ema_55_1h": "Slow trend on 1H. Crossover with EMA 21 triggers day trade entry.",
+        "rsi_14_1h": "Standard RSI. Below 20 = oversold (long entry). Above 80 = overbought (short entry).",
+        "macd_1h": "Settings: 12/26/9. Histogram positive and rising for longs.",
+        "volume_1h": "Must be above 20-period volume MA.",
+        "ema_200_4h": "4H macro filter. Only longs above, only shorts below.",
+        "atr_14_1h": "Volatility-adjusted stop and TP levels."
+      },
+      "stop_loss": "1.5x ATR(14) on the 1H chart",
+      "take_profit_1": "2.25x ATR(14) — 1.5:1 R:R, close 50% of position",
+      "take_profit_2": "4.5x ATR(14) — 3:1 R:R, close remaining 50%",
+      "stop_after_tp1": "Move stop to breakeven after TP1 is hit",
+      "long_conditions": [
+        "Price is above the 200 EMA on the 4H chart — macro bias is bullish",
+        "EMA 21 has crossed above EMA 55 on the 1H chart",
+        "RSI(14) is below 20 on the 1H chart — oversold",
+        "MACD histogram is positive and rising on the 1H chart",
+        "Volume is above the 20-period volume MA on the 1H chart",
+        "4H candle closed bullish — higher timeframe agrees with 1H signal",
+        "Price is making a higher high and higher low on the 1H chart",
+        "No major resistance within 2x ATR(14) above entry",
+        "4H RSI(14) is above 50 — 4H momentum confirms direction",
+        "EMA 21 is above EMA 55 on the 4H chart — 4H trend aligned"
+      ],
+      "short_conditions": [
+        "Price is below the 200 EMA on the 4H chart — macro bias is bearish",
+        "EMA 21 has crossed below EMA 55 on the 1H chart",
+        "RSI(14) is above 80 on the 1H chart — overbought",
+        "MACD histogram is negative and falling on the 1H chart",
+        "Volume is above the 20-period volume MA on the 1H chart",
+        "4H candle closed bearish — higher timeframe agrees",
+        "Price is making a lower high and lower low on the 1H chart",
+        "No major support within 2x ATR(14) below entry",
+        "4H RSI(14) is below 50",
+        "EMA 21 is below EMA 55 on the 4H chart"
+      ]
+    },
+
+    "swing": {
+      "timeframe": "4H",
+      "confirmation_timeframe": "1D",
+      "leverage": 1,
+      "typical_hold_time": "1 to 14 days",
+      "description": "Higher timeframe setups held for days. 1x leverage only — swing trades are exposed to overnight risk and do not require leverage to be profitable at this scale.",
+      "indicators": {
+        "ema_21_4h": "Fast trend on 4H.",
+        "ema_55_4h": "Slow trend on 4H. Crossover is the swing entry signal.",
+        "ema_200_daily": "Daily macro filter. Non-negotiable — never swing trade against this.",
+        "rsi_14_4h": "Below 20 = oversold (long entry). Above 80 = overbought (short entry).",
+        "macd_4h": "Settings: 12/26/9. Must confirm direction.",
+        "volume_4h": "Above 20-period MA required.",
+        "bollinger_bands_4h": "20-period, 2.0 SD. Squeeze breakout adds to confidence.",
+        "atr_14_4h": "Dynamic stop and TP sizing."
+      },
+      "stop_loss": "1.5x ATR(14) on the 4H chart",
+      "take_profit_1": "2.25x ATR(14) — 1.5:1 R:R, close 50%",
+      "take_profit_2": "4.5x ATR(14) — 3:1 R:R, close remaining 50%",
+      "stop_after_tp1": "Move stop to breakeven after TP1 is hit",
+      "long_conditions": [
+        "Price is above the 200 EMA on the Daily chart — macro bull market confirmed",
+        "EMA 21 has crossed above EMA 55 on the 4H chart",
+        "RSI(14) is below 20 on the 4H chart — oversold",
+        "MACD histogram is positive and rising on the 4H chart",
+        "Volume is above the 20-period volume MA on the 4H chart",
+        "Bollinger Band squeeze has released upward OR price has broken above the upper band",
+        "4H price structure shows higher high and higher low",
+        "No major resistance within 2x ATR(14) above entry",
+        "Daily candle closed above the prior day's high",
+        "EMA 21 is above EMA 55 on the Daily chart"
+      ],
+      "short_conditions": [
+        "Price is below the 200 EMA on the Daily chart — macro bear market confirmed",
+        "EMA 21 has crossed below EMA 55 on the 4H chart",
+        "RSI(14) is above 80 on the 4H chart — overbought",
+        "MACD histogram is negative and falling on the 4H chart",
+        "Volume is above the 20-period volume MA on the 4H chart",
+        "Bollinger Band squeeze has released downward OR price has broken below the lower band",
+        "4H price structure shows lower high and lower low",
+        "No major support within 2x ATR(14) below entry",
+        "Daily candle closed below the prior day's low",
+        "EMA 21 is below EMA 55 on the Daily chart"
+      ]
+    }
+  },
+
+  "decision_logic": {
+    "description": "At each scheduled run, the bot evaluates all three timeframes and selects the best setup.",
+    "process": [
+      "Step 1: Score the scalp setup (5m + 15m). Calculate confidence out of 100.",
+      "Step 2: Score the day trade setup (1H + 4H). Calculate confidence out of 100.",
+      "Step 3: Score the swing setup (4H + Daily). Calculate confidence out of 100.",
+      "Step 4: If no timeframe scores 80 or above — stay flat. Log all three scores and which conditions failed.",
+      "Step 5: If one or more timeframes score 80+ — select the highest-scoring setup.",
+      "Step 6: If two setups are within 5 points of each other — prefer the higher timeframe (swing over day trade, day trade over scalp) for lower risk.",
+      "Step 7: Execute with the leverage assigned to that style. Set TP and SL automatically. Log the full decision."
+    ]
+  },
+
+  "stay_out_conditions": [
+    "No timeframe scores 80 or above — market is ambiguous",
+    "Long and short scores are within 20 points of each other on the selected timeframe — no clear direction",
+    "ATR(14) is more than 3x its 20-period average — extreme volatility, risk is unquantifiable",
+    "Price is within 0.5% of the 200 EMA on the Daily chart — directional bias is unclear at the macro level",
+    "An active position is already open — the bot does not stack positions"
   ],
 
   "risk_rules": [
-    "Risk maximum 1% of portfolio per trade",
-    "Maximum trade size capped by MAX_TRADE_SIZE_USD in .env",
+    "Maximum risk per trade: 1.5% of portfolio value — position size and leverage are both calculated to respect this cap",
+    "Maximum trade size capped by MAX_TRADE_SIZE_USD in .env regardless of position size calculation",
     "Maximum trades per day capped by MAX_TRADES_PER_DAY in .env",
-    "Do not trade if price is more than 1.5% away from VWAP — overextended",
-    "Paper trade first — validate this strategy on your specific asset before going live"
+    "Hard leverage cap: never exceed MAX_LEVERAGE=3 set in .env",
+    "Only one open position at a time — no stacking, no averaging down",
+    "Paper trade first — validate for at least 30 signals before switching PAPER_TRADING=false"
   ],
 
-  "notes": "Scalping strategy — designed for 1m to 5m timeframes. RSI(3) is intentionally fast and sensitive. Do not apply to higher timeframes."
+  "notes": "The bot decides — scalp, day trade, or swing — based purely on which setup scores highest above 80. You do not choose the style. You set the guardrails (max trade size, max trades per day, max leverage) and the bot does the rest. Check safety-check-log.json to see every decision: the score for each timeframe, which conditions passed and failed, and why a trade was taken or skipped."
 }
