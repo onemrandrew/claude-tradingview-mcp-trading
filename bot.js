@@ -190,22 +190,35 @@ function calcATR(candles, period = 14) {
 
 function calcMACD(closes, fast = 12, slow = 26, signal = 9) {
   if (closes.length < slow + signal) return null;
-  const emaFast   = calcEMA(closes, fast);
-  const emaSlow   = calcEMA(closes, slow);
-  if (!emaFast || !emaSlow) return null;
-  const macdLine  = emaFast - emaSlow;
-  // Approximate signal as EMA of last `signal` MACD values
+
+  const multFast = 2 / (fast + 1);
+  const multSlow = 2 / (slow + 1);
+  const multSig  = 2 / (signal + 1);
+
+  // Fast EMA: SMA-init over first `fast` bars, then incremental up to index `slow-1`
+  let emaFast = closes.slice(0, fast).reduce((a, b) => a + b, 0) / fast;
+  for (let i = fast; i < slow; i++) emaFast = closes[i] * multFast + emaFast * (1 - multFast);
+
+  // Slow EMA: SMA-init over first `slow` bars
+  let emaSlow = closes.slice(0, slow).reduce((a, b) => a + b, 0) / slow;
+
+  // Build MACD series in a single O(n) pass
   const macdSeries = [];
-  for (let i = slow; i <= closes.length; i++) {
-    const f = calcEMA(closes.slice(0, i), fast);
-    const s = calcEMA(closes.slice(0, i), slow);
-    if (f && s) macdSeries.push(f - s);
+  for (let i = slow; i < closes.length; i++) {
+    emaFast = closes[i] * multFast + emaFast * (1 - multFast);
+    emaSlow = closes[i] * multSlow + emaSlow * (1 - multSlow);
+    macdSeries.push(emaFast - emaSlow);
   }
-  const signalLine = macdSeries.length >= signal
-    ? calcEMA(macdSeries, signal)
-    : macdLine;
-  const histogram = macdLine - (signalLine || 0);
-  return { macdLine, signalLine, histogram };
+  if (macdSeries.length < signal) return null;
+
+  // Signal line: EMA of MACD series
+  let signalLine = macdSeries.slice(0, signal).reduce((a, b) => a + b, 0) / signal;
+  for (let i = signal; i < macdSeries.length; i++) {
+    signalLine = macdSeries[i] * multSig + signalLine * (1 - multSig);
+  }
+
+  const macdLine = macdSeries[macdSeries.length - 1];
+  return { macdLine, signalLine, histogram: macdLine - signalLine };
 }
 
 // EMA crossover detection (looks at current and previous bar)
@@ -222,11 +235,13 @@ function detectCrossover(closes, fastPeriod, slowPeriod) {
 }
 
 function volumeAboveMA(candles, period = 20, multiplier = 1.0) {
-  if (candles.length < period + 1) return false;
-  const recent = candles.slice(-period - 1, -1);
-  const avg = recent.reduce((s, c) => s + c.volume, 0) / period;
-  const lastVol = candles[candles.length - 1].volume;
-  return lastVol >= avg * multiplier;
+  // Use the most recently COMPLETED candle, not the current open one.
+  // The bot runs at the top of each hour — the current candle has near-zero volume.
+  if (candles.length < period + 2) return false;
+  const recent = candles.slice(-period - 2, -2);
+  const avg    = recent.reduce((s, c) => s + c.volume, 0) / period;
+  const refVol = candles[candles.length - 2].volume;
+  return refVol >= avg * multiplier;
 }
 
 function priceStructure(candles, lookback = 10) {
@@ -885,6 +900,52 @@ async function logToGoogleSheet(logEntry, bias, conditionsPassed, conditionsFail
   }
 }
 
+// ─── Paper Position Tracker ───────────────────────────────────────────────────
+// In paper mode, BitGet has no real positions to check. Instead, we query the
+// Google Sheet (via doGet on the same Apps Script URL) to find the last TRADE
+// row, then check whether the current price has already crossed its SL or TP2.
+// If the position is still open, no new trade is entered.
+//
+// Requires doGet to be added to the Google Apps Script — see README.
+
+async function getPaperPosition() {
+  const webhookUrl = process.env.GOOGLE_SHEET_WEBHOOK;
+  if (!webhookUrl) return null; // no sheet configured → skip check
+
+  try {
+    const res = await fetch(webhookUrl); // GET triggers doGet
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.error || !data.lastTrade) return null;
+
+    const t = data.lastTrade;
+    if (!t.symbol || t.sl === null || t.tp2 === null) return null;
+
+    // Fetch current price for the open trade's symbol
+    const candles = await fetchCandles(t.symbol, "1m", 5);
+    const currentPrice = candles[candles.length - 1].close;
+
+    const isLong = t.direction === "long";
+    const hitSL  = isLong ? currentPrice <= t.sl  : currentPrice >= t.sl;
+    const hitTP2 = isLong ? currentPrice >= t.tp2 : currentPrice <= t.tp2;
+
+    if (hitSL || hitTP2) {
+      const reason = hitSL ? `SL hit ($${t.sl})` : `TP2 hit ($${t.tp2})`;
+      console.log(`📊 Last paper trade (${t.symbol} ${t.direction} @ $${t.price}) is CLOSED — ${reason} | current $${currentPrice.toFixed(2)}`);
+      return null; // position is closed — allow new entry
+    }
+
+    console.log(`🔵 Open paper position: ${t.symbol} ${t.direction.toUpperCase()} @ $${t.price}`);
+    console.log(`   Current $${currentPrice.toFixed(2)} | SL $${t.sl} | TP2 $${t.tp2} — still active`);
+    return t;
+
+  } catch (err) {
+    // If doGet isn't deployed yet, the call fails — allow trade (fail open)
+    console.log(`⚠️  Paper position check unavailable: ${err.message} — proceeding without stacking guard`);
+    return null;
+  }
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function run() {
@@ -905,9 +966,17 @@ async function run() {
 
   const log = loadLog();
 
-  // SAFEGUARD: Open position check (BitGet) — bot does not stack positions
-  if (!CONFIG.paperTrading) {
-    console.log("\n── Open Position Check ──────────────────────────────────\n");
+  // SAFEGUARD: Open position check — bot does not stack positions
+  console.log("\n── Open Position Check ──────────────────────────────────\n");
+  if (CONFIG.paperTrading) {
+    const paperPos = await getPaperPosition();
+    if (paperPos) {
+      console.log(`🛑 Open paper position on ${paperPos.symbol} — waiting for SL/TP2 to close.`);
+      console.log("Paper bot does not stack positions — exiting this run.");
+      return;
+    }
+    console.log("✅ No open paper position — clear to scan");
+  } else {
     const open = await getOpenPositions();
     if (open.length > 0) {
       console.log(`🛑 Open position detected on ${open[0].symbol} (size ${open[0].total})`);
@@ -1080,7 +1149,9 @@ async function run() {
 
   writeTradeCsv(logEntry);
 
-  const conds  = chosen?.conditions ?? [];
+  // Use reference (best setup found, qualifying or not) so BLOCKED entries
+  // show which conditions passed/failed instead of blank dashes.
+  const conds  = (chosen ?? reference)?.conditions ?? [];
   const passed = conds.filter((c) =>  c.pass).map((c) => c.label).join("; ");
   const failed = conds.filter((c) => !c.pass).map((c) => c.label).join("; ");
   const bias   = direction ?? "FLAT";
