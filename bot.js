@@ -909,8 +909,8 @@ async function logToGoogleSheet(logEntry, bias, conditionsPassed, conditionsFail
 // Requires doGet to be added to the Google Apps Script — see README.
 
 async function getPaperPosition() {
-  const webhookUrl = process.env.GOOGLE_SHEET_WEBHOOK;
-  if (!webhookUrl) return null; // no sheet configured → skip check
+  const webhookUrl = process.env.GOOGLE_SHEET_STATUS_URL;
+  if (!webhookUrl) return null; // no status URL configured → skip check
 
   try {
     const res = await fetch(webhookUrl); // GET triggers doGet
