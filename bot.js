@@ -545,7 +545,7 @@ function signBitGet(timestamp, method, path, body = "") {
     .digest("base64");
 }
 
-async function setFuturesLeverage(symbol, leverage) {
+async function setFuturesLeverage(symbol, leverage, holdSide) {
   const timestamp = Date.now().toString();
   const path = "/api/v2/mix/account/set-leverage";
   const body = JSON.stringify({
@@ -553,7 +553,7 @@ async function setFuturesLeverage(symbol, leverage) {
     productType: "usdt-futures",
     marginCoin: "USDT",
     leverage: String(leverage),
-    holdSide: "long_short",
+    holdSide,
   });
   const sig = signBitGet(timestamp, "POST", path, body);
   const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
@@ -582,8 +582,7 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
     // Futures: size is in contracts. Contract size varies by symbol.
     const CONTRACT_SIZES = { BTCUSDT: 0.001, ETHUSDT: 0.01, SOLUSDT: 1 };
     const contractSize = CONTRACT_SIZES[symbol] ?? 0.001;
-    const btcAmount = sizeUSD / price;
-    const contracts = Math.floor(btcAmount / contractSize);
+    const contracts = Math.floor((sizeUSD * leverage) / (price * contractSize));
     if (contracts < 1) throw new Error(`Trade size $${sizeUSD} too small for 1 contract at $${price}`);
 
     const path = "/api/v2/mix/order/placeOrder";
@@ -795,9 +794,11 @@ async function scanSymbol(symbol) {
 
 // Confidence-based leverage selector (per rules.json)
 function leverageForStyle(style, score) {
-  const styleMax = { scalp: 3, day_trade: 2, swing: 1 }[style] ?? 1;
-  // Score of exactly 80 → use lower leverage; 90+ → full
-  const reduced = score < 90 ? Math.max(1, styleMax - 1) : styleMax;
+  // Tiers tuned for small accounts — need enough notional to cover min contract sizes.
+  // scalp: 5x | day_trade: 3x | swing: 2x
+  // Score 80–89: one step lower; 90+: full tier
+  const styleMax = { scalp: 5, day_trade: 3, swing: 2 }[style] ?? 2;
+  const reduced  = score < 90 ? Math.max(2, styleMax - 1) : styleMax;
   return Math.min(reduced, CONFIG.maxLeverage);
 }
 
@@ -1071,8 +1072,8 @@ async function run() {
   }
 
   // Trade size & leverage (confidence-scaled)
-  const tradeSize = Math.min(CONFIG.portfolioValue * 0.015, CONFIG.maxTradeSizeUSD);
-  const leverage  = chosen ? leverageForStyle(chosen.style, chosen.score) : 1;
+  const tradeSize = Math.min(CONFIG.portfolioValue * 0.10, CONFIG.maxTradeSizeUSD);
+  const leverage  = chosen ? leverageForStyle(chosen.style, chosen.score) : 2;
 
   const direction = reference?.direction ?? null;
   const symbol    = reference?.symbol    ?? watchlist[0];
@@ -1141,7 +1142,7 @@ async function run() {
           console.log(`\n🔴 LIVE ORDER — ${chosen.style.toUpperCase()} ${direction.toUpperCase()} $${tradeSize.toFixed(2)} ${symbol} | ${leverage}x`);
           try {
             if (CONFIG.tradeMode === "futures") {
-              await setFuturesLeverage(symbol, leverage);
+              await setFuturesLeverage(symbol, leverage, direction === "long" ? "long" : "short");
             }
             const side  = direction === "long" ? "buy" : "sell";
             const order = await placeBitGetOrder(symbol, side, tradeSize, price, leverage);
