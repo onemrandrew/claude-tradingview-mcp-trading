@@ -285,43 +285,49 @@ function calcVWAP(candles) {
   return cumVol === 0 ? null : cumTPV / cumVol;
 }
 
-// ─── SAFEGUARD: Macro Veto (Daily 200 EMA check) ─────────────────────────────
-// Hard veto: if the bot wants to trade in a direction that conflicts with the
-// daily macro trend, abort. This is the single biggest edge-preserving filter.
+// ─── SAFEGUARD: Macro Veto (style-aware EMA check) ────────────────────────────
+// Swing trades use the Daily 200 EMA — they need the long-term trend on their side.
+// Scalp and day_trade use the 4H 200 EMA — medium-term alignment is sufficient,
+// and this allows shorts when the 4H is bearish even if the daily is still bullish.
 
-async function checkMacroVeto(symbol, direction) {
+async function checkMacroVeto(symbol, direction, style) {
   try {
-    console.log(`\n── Macro Veto Check (${symbol} Daily 200 EMA) ───────────\n`);
-    const dailyCandles = await fetchCandles(symbol, "1D", 100);
-    if (dailyCandles.length < 50) {
-      console.log("⚠️  Not enough daily data for macro veto — aborting trade as a precaution");
-      return { vetoed: true, reason: "Insufficient daily data" };
+    const useDaily = style === "swing";
+    const tf       = useDaily ? "1D" : "4H";
+    const minBars  = useDaily ? 50   : 200;
+    const fetchN   = useDaily ? 100  : 250;
+    const label    = useDaily ? "Daily" : "4H";
+
+    console.log(`\n── Macro Veto Check (${symbol} ${label} 200 EMA) ───────────\n`);
+    const candles = await fetchCandles(symbol, tf, fetchN);
+    if (candles.length < minBars) {
+      console.log(`⚠️  Not enough ${label} data for macro veto — aborting trade as a precaution`);
+      return { vetoed: true, reason: `Insufficient ${label} data` };
     }
 
-    const dailyCloses = dailyCandles.map((c) => c.close);
-    // Use highest available period up to 200
-    const period = Math.min(200, dailyCloses.length - 1);
-    const dailyEMA = calcEMA(dailyCloses, period);
-    const dailyPrice = dailyCloses[dailyCloses.length - 1];
+    const closes = candles.map((c) => c.close);
+    const period = Math.min(200, closes.length - 1);
+    const ema    = calcEMA(closes, period);
+    const price  = closes[closes.length - 1];
 
-    console.log(`  Daily price       : $${dailyPrice.toFixed(2)}`);
-    console.log(`  Daily ${period} EMA   : $${dailyEMA.toFixed(2)}`);
+    console.log(`  ${label} price      : $${price.toFixed(2)}`);
+    console.log(`  ${label} ${period} EMA : $${ema.toFixed(2)}`);
 
-    const macroBullish = dailyPrice > dailyEMA;
-    const macroBearish = dailyPrice < dailyEMA;
+    const macroBullish = price > ema;
+    const macroBearish = price < ema;
 
     if (direction === "long" && macroBearish) {
-      console.log("🛑 MACRO VETO — long signal but daily macro is BEARISH. Trade aborted.");
-      return { vetoed: true, reason: `Long against bearish macro (price $${dailyPrice.toFixed(2)} < daily EMA $${dailyEMA.toFixed(2)})` };
+      console.log(`🛑 MACRO VETO — long signal but ${label} macro is BEARISH. Trade aborted.`);
+      return { vetoed: true, reason: `Long against bearish macro (price $${price.toFixed(2)} < ${label} EMA $${ema.toFixed(2)})` };
     }
 
     if (direction === "short" && macroBullish) {
-      console.log("🛑 MACRO VETO — short signal but daily macro is BULLISH. Trade aborted.");
-      return { vetoed: true, reason: `Short against bullish macro (price $${dailyPrice.toFixed(2)} > daily EMA $${dailyEMA.toFixed(2)})` };
+      console.log(`🛑 MACRO VETO — short signal but ${label} macro is BULLISH. Trade aborted.`);
+      return { vetoed: true, reason: `Short against bullish macro (price $${price.toFixed(2)} > ${label} EMA $${ema.toFixed(2)})` };
     }
 
-    console.log(`✅ MACRO ALIGNED — ${direction} setup matches daily ${macroBullish ? "bullish" : "bearish"} macro`);
-    return { vetoed: false, dailyPrice, dailyEMA };
+    console.log(`✅ MACRO ALIGNED — ${direction} setup matches ${label} ${macroBullish ? "bullish" : "bearish"} macro`);
+    return { vetoed: false, dailyPrice: price, dailyEMA: ema };
   } catch (err) {
     console.log(`⚠️  Macro veto check failed: ${err.message} — aborting trade as a precaution`);
     return { vetoed: true, reason: `Macro check error: ${err.message}` };
@@ -1066,7 +1072,7 @@ async function run() {
 
   if (allPass) {
     // SAFEGUARD: Macro veto check before any trade (paper or live)
-    const macroCheck = await checkMacroVeto(symbol, direction);
+    const macroCheck = await checkMacroVeto(symbol, direction, reference?.style ?? "swing");
     logEntry.macroCheck = macroCheck;
 
     if (macroCheck.vetoed) {
@@ -1255,8 +1261,8 @@ async function testTrade(direction) {
   const price = candles[candles.length - 1].close;
   console.log(`  Current price: $${price.toFixed(2)}`);
 
-  // Macro veto applies even to test trades
-  const macroCheck = await checkMacroVeto(CONFIG.symbol, direction);
+  // Macro veto applies even to test trades (use swing = daily EMA for conservative test)
+  const macroCheck = await checkMacroVeto(CONFIG.symbol, direction, "swing");
   if (macroCheck.vetoed) {
     console.log(`\n🛑 TEST TRADE VETOED — ${macroCheck.reason}`);
     console.log("Try the opposite direction or wait for macro alignment.");
