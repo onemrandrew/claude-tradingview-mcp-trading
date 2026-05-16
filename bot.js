@@ -121,7 +121,7 @@ async function fetchCandles(symbol, interval, limit = 100) {
     "1H":"1hour","4H":"4hour","6H":"6hour","12H":"12hour","1D":"1day","1W":"1week",
   };
 
-  const clampedLimit = Math.min(limit, 100);
+  const clampedLimit = Math.min(limit, 300);
   const isFutures = CONFIG.tradeMode === "futures";
   const granularity = isFutures
     ? (futuresMap[interval] || "4H")
@@ -162,30 +162,34 @@ function calcEMA(closes, period) {
 
 function calcRSI(closes, period = 14) {
   if (closes.length < period + 1) return null;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
     const diff = closes[i] - closes[i - 1];
-    if (diff > 0) gains += diff;
-    else losses -= diff;
+    if (diff > 0) avgGain += diff; else avgLoss -= diff;
   }
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
+  avgGain /= period;
+  avgLoss /= period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(0, diff))  / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(0, -diff)) / period;
+  }
   if (avgLoss === 0) return 100;
   return 100 - 100 / (1 + avgGain / avgLoss);
 }
 
 function calcATR(candles, period = 14) {
   if (candles.length < period + 1) return null;
-  const trValues = [];
+  const trs = [];
   for (let i = 1; i < candles.length; i++) {
-    const high  = candles[i].high;
-    const low   = candles[i].low;
-    const prevClose = candles[i - 1].close;
-    trValues.push(Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose)));
+    const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
   }
-  // Simple average of last `period` true ranges
-  const slice = trValues.slice(-period);
-  return slice.reduce((a, b) => a + b, 0) / slice.length;
+  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < trs.length; i++) {
+    atr = (atr * (period - 1) + trs[i]) / period;
+  }
+  return atr;
 }
 
 function calcMACD(closes, fast = 12, slow = 26, signal = 9) {
@@ -356,6 +360,12 @@ function scoreScalp(c5m, c15m, vwap, direction) {
   const volOK      = volumeAboveMA(c5m, 20, 1.5);
   const atr7_5m    = calcATR(c5m, 7);
 
+  const atrBase5m = calcATR(c5m, 20);
+  if (atrBase5m && atr7_5m && atr7_5m > atrBase5m * 3) {
+    console.log(`⚠️  Extreme 5m volatility — skipping scalp`);
+    return { score: 0, direction: null, conditions: [], atr: atr7_5m, price, style: "scalp" };
+  }
+
   const conditions = [];
   const check = (label, pass) => conditions.push({ label, pass: !!pass });
 
@@ -408,6 +418,12 @@ function scoreDayTrade(c1h, c4h, direction) {
   const cross1h   = detectCrossover(closes1h, 21, 55);
   const volOK     = volumeAboveMA(c1h, 20, 1.0);
   const atr14_1h  = calcATR(c1h, 14);
+
+  const atrBase1h = calcATR(c1h, 20);
+  if (atrBase1h && atr14_1h && atr14_1h > atrBase1h * 3) {
+    console.log(`⚠️  Extreme 1H volatility — skipping day_trade`);
+    return { score: 0, direction: null, conditions: [], atr: atr14_1h, price, style: "day_trade" };
+  }
 
   const conditions = [];
   const check = (label, pass) => conditions.push({ label, pass: !!pass });
@@ -463,6 +479,12 @@ function scoreSwing(c4h, c1d, direction) {
   const volOK      = volumeAboveMA(c4h, 20, 1.0);
   const atr14_4h   = calcATR(c4h, 14);
 
+  const atrBase4h = calcATR(c4h, 20);
+  if (atrBase4h && atr14_4h && atr14_4h > atrBase4h * 3) {
+    console.log(`⚠️  Extreme 4H volatility — skipping swing`);
+    return { score: 0, direction: null, conditions: [], atr: atr14_4h, price, style: "swing" };
+  }
+
   const conditions = [];
   const check = (label, pass) => conditions.push({ label, pass: !!pass });
 
@@ -472,7 +494,7 @@ function scoreSwing(c4h, c1d, direction) {
     check("RSI(14) below 30 on 4H (pullback in trend)",    rsi14_4h !== null && rsi14_4h < 30);
     check("MACD histogram positive on 4H",                  macd_4h && macd_4h.histogram > 0);
     check("Volume above 20-period MA on 4H",                volOK);
-    check("Bollinger upper band breached or squeeze release", bb_4h && price > bb_4h.upper);
+    check("Price above Bollinger middle band (trend bias bullish)", bb_4h && price > bb_4h.middle);
     check("Higher high and higher low on 4H",                struct4h && struct4h.higherHigh && struct4h.higherLow);
     check("Price above EMA 21 on 4H",                        ema21_4h && price > ema21_4h);
     check("Daily candle closed above prior day's high",      last1d && prev1d && last1d.close > prev1d.high);
@@ -483,7 +505,7 @@ function scoreSwing(c4h, c1d, direction) {
     check("RSI(14) above 70 on 4H (rally in downtrend)",   rsi14_4h !== null && rsi14_4h > 70);
     check("MACD histogram negative on 4H",                  macd_4h && macd_4h.histogram < 0);
     check("Volume above 20-period MA on 4H",                volOK);
-    check("Bollinger lower band breached or squeeze release", bb_4h && price < bb_4h.lower);
+    check("Price below Bollinger middle band (trend bias bearish)", bb_4h && price < bb_4h.middle);
     check("Lower high and lower low on 4H",                  struct4h && struct4h.lowerHigh && struct4h.lowerLow);
     check("Price below EMA 21 on 4H",                        ema21_4h && price < ema21_4h);
     check("Daily candle closed below prior day's low",       last1d && prev1d && last1d.close < prev1d.low);
@@ -557,8 +579,9 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
   const timestamp = Date.now().toString();
 
   if (CONFIG.tradeMode === "futures") {
-    // Futures: size is in contracts. For BTCUSDT each contract = 0.001 BTC
-    const contractSize = 0.001;
+    // Futures: size is in contracts. Contract size varies by symbol.
+    const CONTRACT_SIZES = { BTCUSDT: 0.001, ETHUSDT: 0.01, SOLUSDT: 1 };
+    const contractSize = CONTRACT_SIZES[symbol] ?? 0.001;
     const btcAmount = sizeUSD / price;
     const contracts = Math.floor(btcAmount / contractSize);
     if (contracts < 1) throw new Error(`Trade size $${sizeUSD} too small for 1 contract at $${price}`);
@@ -655,23 +678,24 @@ async function placeTpslOrder(symbol, holdSide, planType, triggerPrice, size) {
 //   SL:  1.5 × ATR  below entry (long)  / above entry (short)
 //   TP1: 2.25 × ATR above entry (long)  / below entry (short)  → close 50%
 //   TP2: 4.5 × ATR  above entry (long)  / below entry (short)  → close remaining 50%
-function computeLevels(direction, entryPrice, atr) {
-  const sl_mult  = 1.5;
-  const tp1_mult = 2.25;
-  const tp2_mult = 4.5;
+// Scalp uses tighter multipliers: SL 1.0×, TP1 1.5×, TP2 3.0×
+function computeLevels(direction, entryPrice, atr, style) {
+  const mult = style === "scalp"
+    ? { sl: 1.0, tp1: 1.5, tp2: 3.0 }
+    : { sl: 1.5, tp1: 2.25, tp2: 4.5 };
 
   if (direction === "long") {
     return {
-      stopLoss:    entryPrice - sl_mult  * atr,
-      takeProfit1: entryPrice + tp1_mult * atr,
-      takeProfit2: entryPrice + tp2_mult * atr,
+      stopLoss:    entryPrice - mult.sl  * atr,
+      takeProfit1: entryPrice + mult.tp1 * atr,
+      takeProfit2: entryPrice + mult.tp2 * atr,
       atr,
     };
   } else {
     return {
-      stopLoss:    entryPrice + sl_mult  * atr,
-      takeProfit1: entryPrice - tp1_mult * atr,
-      takeProfit2: entryPrice - tp2_mult * atr,
+      stopLoss:    entryPrice + mult.sl  * atr,
+      takeProfit1: entryPrice - mult.tp1 * atr,
+      takeProfit2: entryPrice - mult.tp2 * atr,
       atr,
     };
   }
@@ -699,8 +723,7 @@ async function getOpenPositions() {
     }
     return (data.data || []).filter((p) => parseFloat(p.total || 0) > 0);
   } catch (err) {
-    console.log(`⚠️  Position check failed: ${err.message}`);
-    return [];
+    throw err;
   }
 }
 
@@ -983,7 +1006,13 @@ async function run() {
     }
     console.log("✅ No open paper position — clear to scan");
   } else {
-    const open = await getOpenPositions();
+    let open;
+    try {
+      open = await getOpenPositions();
+    } catch (err) {
+      console.log(`🛑 Cannot verify open positions: ${err.message} — aborting run to prevent stacking.`);
+      return;
+    }
     if (open.length > 0) {
       console.log(`🛑 Open position detected on ${open[0].symbol} (size ${open[0].total})`);
       console.log("Bot does not stack positions — exiting until current trade closes.");
@@ -1079,7 +1108,7 @@ async function run() {
       console.log(`\n🛑 TRADE VETOED — ${macroCheck.reason}`);
       // Still compute hypothetical levels so the log shows what would have been
       if (atr && price) {
-        const hypothetical = computeLevels(direction, price, atr);
+        const hypothetical = computeLevels(direction, price, atr, reference?.style);
         logEntry.levels = hypothetical;
         console.log(`   Hypothetical SL $${hypothetical.stopLoss.toFixed(2)} | TP1 $${hypothetical.takeProfit1.toFixed(2)} | TP2 $${hypothetical.takeProfit2.toFixed(2)}`);
       }
@@ -1094,7 +1123,7 @@ async function run() {
         logEntry.vetoed = true;
         logEntry.vetoReason = "ATR unavailable";
       } else {
-        const levels = computeLevels(direction, price, atr);
+        const levels = computeLevels(direction, price, atr, chosen.style);
         logEntry.levels = levels;
 
         console.log(`\n── SL / TP Levels (ATR = $${atr.toFixed(2)}) ──────────────\n`);
@@ -1130,10 +1159,51 @@ async function run() {
                 console.log(`⚠️  SL order failed: ${err.message} — CLOSE MANUALLY`);
                 logEntry.slError = err.message;
               }
+              // Place TP1 reduce-only limit order at half position size
+              try {
+                const CONTRACT_SIZES_TP1 = { BTCUSDT: 0.001, ETHUSDT: 0.01, SOLUSDT: 1 };
+                const cs = CONTRACT_SIZES_TP1[symbol] ?? 0.001;
+                const totalContracts = Math.floor((tradeSize / price) / cs);
+                const tp1Contracts = Math.floor(totalContracts / 2);
+                if (tp1Contracts >= 1) {
+                  const tp1Timestamp = Date.now().toString();
+                  const tp1Path = "/api/v2/mix/order/placeOrder";
+                  const tp1Body = JSON.stringify({
+                    symbol,
+                    productType: "usdt-futures",
+                    marginMode: "isolated",
+                    marginCoin: "USDT",
+                    size: String(tp1Contracts),
+                    price: levels.takeProfit1.toFixed(2),
+                    side: direction === "long" ? "sell" : "buy",
+                    tradeSide: direction === "long" ? "close_long" : "close_short",
+                    orderType: "limit",
+                    reduceOnly: "YES",
+                  });
+                  const tp1Sig = signBitGet(tp1Timestamp, "POST", tp1Path, tp1Body);
+                  const tp1Res = await fetch(`${CONFIG.bitget.baseUrl}${tp1Path}`, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                      "ACCESS-KEY": CONFIG.bitget.apiKey,
+                      "ACCESS-SIGN": tp1Sig,
+                      "ACCESS-TIMESTAMP": tp1Timestamp,
+                      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+                    },
+                    body: tp1Body,
+                  });
+                  const tp1Data = await tp1Res.json();
+                  if (tp1Data.code !== "00000") throw new Error(tp1Data.msg);
+                  console.log(`✅ TP1 order placed @ $${levels.takeProfit1.toFixed(2)}`);
+                } else {
+                  console.log(`⚠️  TP1 order skipped — position too small for a half-size contract`);
+                }
+              } catch (err) {
+                console.log(`⚠️  TP1 order failed — relying on TP2 only: ${err.message}`);
+              }
               try {
                 await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit2, undefined);
                 console.log(`✅ TAKE PROFIT SET — $${levels.takeProfit2.toFixed(2)} (TP2, full close)`);
-                console.log(`   ℹ️  TP1 at $${levels.takeProfit1.toFixed(2)} must be managed manually (partial close + move SL to BE)`);
               } catch (err) {
                 console.log(`⚠️  TP order failed: ${err.message} — monitor manually`);
                 logEntry.tpError = err.message;
@@ -1438,7 +1508,7 @@ async function runBacktest() {
     // Macro check: 1D EMA — approximate using c4h aggregated to daily
     // Pragmatic: skip macro check in backtest, but log the choice
     const entry = bar.close;
-    const levels = computeLevels(direction, entry, best.atr);
+    const levels = computeLevels(direction, entry, best.atr, "day_trade");
     const notional = equity * RISK_PER_TRADE * 10; // approximate position notional with leverage
 
     openTrade = {
