@@ -103,8 +103,8 @@ function saveLog(log) {
 }
 
 function countTodaysTrades(log) {
-  const today = new Date().toISOString().slice(0, 10);
-  return log.trades.filter((t) => t.timestamp.startsWith(today) && t.orderPlaced).length;
+  const today = ptDate(new Date()); // YYYY-MM-DD in PT, so day resets at midnight PT
+  return log.trades.filter((t) => ptDate(t.timestamp) === today && t.orderPlaced).length;
 }
 
 // ─── Market Data (BitGet public API) ─────────────────────────────────────────
@@ -643,7 +643,7 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
 
 // ─── BitGet TP/SL Orders ──────────────────────────────────────────────────────
 // Places separate take-profit and stop-loss trigger orders after an entry.
-// BitGet endpoint: /api/v2/mix/order/placeTpslOrder
+// BitGet endpoint: /api/v2/mix/order/place-tpsl-order
 // planType: "pos_profit" = take profit  |  "pos_loss" = stop loss
 
 async function placeTpslOrder(symbol, holdSide, planType, triggerPrice, size) {
