@@ -717,8 +717,7 @@ async function getOpenPositions() {
     });
     const data = await res.json();
     if (data.code !== "00000") {
-      console.log(`⚠️  Position check warning: ${data.msg} — proceeding cautiously`);
-      return [];
+      throw new Error(`Position check failed: ${data.msg}`);
     }
     return (data.data || []).filter((p) => parseFloat(p.total || 0) > 0);
   } catch (err) {
@@ -919,9 +918,11 @@ async function logToGoogleSheet(logEntry, bias, conditionsPassed, conditionsFail
         conditionsFailed,
         notes: logEntry.vetoed
           ? `🛑 MACRO VETO: ${logEntry.vetoReason}`
-          : logEntry.allPass
-            ? `All conditions met | ${logEntry.leverage}x | ${logEntry.direction} | SL ${logEntry.levels?.stopLoss?.toFixed(2)} | TP1 ${logEntry.levels?.takeProfit1?.toFixed(2)} | TP2 ${logEntry.levels?.takeProfit2?.toFixed(2)}`
-            : `Blocked: score ${logEntry.score}/100`,
+          : logEntry.error
+            ? `❌ ORDER FAILED: ${logEntry.error}`
+            : logEntry.allPass
+              ? `All conditions met | ${logEntry.leverage}x | ${logEntry.direction} | SL ${logEntry.levels?.stopLoss?.toFixed(2)} | TP1 ${logEntry.levels?.takeProfit1?.toFixed(2)} | TP2 ${logEntry.levels?.takeProfit2?.toFixed(2)}`
+              : `Blocked: score ${logEntry.score}/100`,
       }),
     });
     console.log("📊 Decision logged to Google Sheet");
