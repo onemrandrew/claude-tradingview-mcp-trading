@@ -579,11 +579,17 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
   const timestamp = Date.now().toString();
 
   if (CONFIG.tradeMode === "futures") {
-    // Futures: size is in contracts. Contract size varies by symbol.
-    const CONTRACT_SIZES = { BTCUSDT: 0.001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
-    const contractSize = CONTRACT_SIZES[symbol] ?? 0.001;
-    const contracts = Math.floor((sizeUSD * leverage) / (price * contractSize));
-    if (contracts < 1) throw new Error(`Trade size $${sizeUSD} too small for 1 contract at $${price}`);
+    // BitGet USDT-M: `size` is in BASE COIN (BTC/ETH/SOL), not lots.
+    // sizeMultiplier is the minimum increment from the BitGet contract spec.
+    const SIZE_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
+    const SIZE_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1  };
+    const increment = SIZE_MULTIPLIER[symbol] ?? 0.0001;
+    const decimals  = SIZE_DECIMALS[symbol]   ?? 4;
+    const rawAmount = (sizeUSD * leverage) / price;           // base coin desired
+    const sizeAmt   = Math.floor(rawAmount / increment) * increment; // round down to tick
+    if (sizeAmt < increment) throw new Error(`Trade size $${sizeUSD} at ${leverage}x too small for 1 unit of ${symbol} at $${price}`);
+    const sizeStr   = sizeAmt.toFixed(decimals);
+    console.log(`   Size: ${sizeStr} ${symbol.replace("USDT","")} (notional ~$${(sizeAmt*price).toFixed(2)}, margin ~$${(sizeAmt*price/leverage).toFixed(2)})`);
 
     const path = "/api/v2/mix/order/place-order";
     const body = JSON.stringify({
@@ -591,9 +597,9 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
       productType: "usdt-futures",
       marginMode: "isolated",
       marginCoin: "USDT",
-      size: String(contracts),
+      size: sizeStr,
       side: side === "buy" ? "buy" : "sell",
-      tradeSide: side === "buy" ? "open" : "open",
+      tradeSide: "open",
       orderType: "market",
     });
     const sig = signBitGet(timestamp, "POST", path, body);
@@ -1164,21 +1170,23 @@ async function run() {
               }
               // Place TP1 reduce-only limit order at half position size
               try {
-                const CONTRACT_SIZES_TP1 = { BTCUSDT: 0.001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
-                const cs = CONTRACT_SIZES_TP1[symbol] ?? 0.001;
-                const totalContracts = Math.floor((tradeSize * leverage) / (price * cs));
-                const tp1Contracts = Math.floor(totalContracts / 2);
-                if (tp1Contracts >= 1) {
+                const TP1_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
+                const TP1_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1  };
+                const tp1Inc  = TP1_MULTIPLIER[symbol] ?? 0.0001;
+                const tp1Dec  = TP1_DECIMALS[symbol]   ?? 4;
+                const PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3 };
+                const priceDp = PRICE_DP[symbol] ?? 2;
+                const fullSize   = Math.floor((tradeSize * leverage) / price / tp1Inc) * tp1Inc;
+                const tp1SizeAmt = Math.floor(fullSize / 2 / tp1Inc) * tp1Inc;
+                if (tp1SizeAmt >= tp1Inc) {
                   const tp1Timestamp = Date.now().toString();
                   const tp1Path = "/api/v2/mix/order/place-order";
-                  const PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3 };
-                  const priceDp = PRICE_DP[symbol] ?? 2;
                   const tp1Body = JSON.stringify({
                     symbol,
                     productType: "usdt-futures",
                     marginMode: "isolated",
                     marginCoin: "USDT",
-                    size: String(tp1Contracts),
+                    size: tp1SizeAmt.toFixed(tp1Dec),
                     price: levels.takeProfit1.toFixed(priceDp),
                     side: direction === "long" ? "sell" : "buy",
                     tradeSide: "close",
@@ -1198,9 +1206,9 @@ async function run() {
                   });
                   const tp1Data = await tp1Res.json();
                   if (tp1Data.code !== "00000") throw new Error(tp1Data.msg);
-                  console.log(`✅ TP1 order placed @ $${levels.takeProfit1.toFixed(2)}`);
+                  console.log(`✅ TP1 order placed — ${tp1SizeAmt.toFixed(tp1Dec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit1.toFixed(priceDp)}`);
                 } else {
-                  console.log(`⚠️  TP1 order skipped — position too small for a half-size contract`);
+                  console.log(`⚠️  TP1 order skipped — position too small to split (${fullSize.toFixed(tp1Dec)} ${symbol.replace("USDT","")})`);
                 }
               } catch (err) {
                 console.log(`⚠️  TP1 order failed — relying on TP2 only: ${err.message}`);
