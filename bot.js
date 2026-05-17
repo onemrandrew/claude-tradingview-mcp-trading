@@ -530,8 +530,8 @@ function checkTradeLimits(log) {
   }
   console.log(`✅ Trades today: ${todayCount}/${CONFIG.maxTradesPerDay} — within limit`);
 
-  // Risk 1.5% of portfolio, capped at maxTradeSizeUSD
-  const tradeSize = Math.min(CONFIG.portfolioValue * 0.015, CONFIG.maxTradeSizeUSD);
+  // 10% of portfolio per trade, capped at maxTradeSizeUSD (matches run() logic)
+  const tradeSize = Math.min(CONFIG.portfolioValue * 0.10, CONFIG.maxTradeSizeUSD);
   console.log(`✅ Trade size: $${tradeSize.toFixed(2)} — within max $${CONFIG.maxTradeSizeUSD}`);
   return true;
 }
@@ -580,7 +580,7 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
 
   if (CONFIG.tradeMode === "futures") {
     // Futures: size is in contracts. Contract size varies by symbol.
-    const CONTRACT_SIZES = { BTCUSDT: 0.001, ETHUSDT: 0.01, SOLUSDT: 1 };
+    const CONTRACT_SIZES = { BTCUSDT: 0.001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
     const contractSize = CONTRACT_SIZES[symbol] ?? 0.001;
     const contracts = Math.floor((sizeUSD * leverage) / (price * contractSize));
     if (contracts < 1) throw new Error(`Trade size $${sizeUSD} too small for 1 contract at $${price}`);
@@ -643,13 +643,14 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
 async function placeTpslOrder(symbol, holdSide, planType, triggerPrice, size) {
   const timestamp = Date.now().toString();
   const path = "/api/v2/mix/order/place-tpsl-order";
+  const TPSL_PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3 };
+  const tpslPriceDp = TPSL_PRICE_DP[symbol] ?? 2;
   const body = JSON.stringify({
     symbol,
     productType:  "usdt-futures",
-    marginMode:   "isolated",
     marginCoin:   "USDT",
     planType,
-    triggerPrice: triggerPrice.toFixed(2),
+    triggerPrice: triggerPrice.toFixed(tpslPriceDp),
     triggerType:  "mark_price",
     holdSide,
     size:         size !== undefined ? String(size) : undefined,
@@ -1163,24 +1164,25 @@ async function run() {
               }
               // Place TP1 reduce-only limit order at half position size
               try {
-                const CONTRACT_SIZES_TP1 = { BTCUSDT: 0.001, ETHUSDT: 0.01, SOLUSDT: 1 };
+                const CONTRACT_SIZES_TP1 = { BTCUSDT: 0.001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
                 const cs = CONTRACT_SIZES_TP1[symbol] ?? 0.001;
-                const totalContracts = Math.floor((tradeSize / price) / cs);
+                const totalContracts = Math.floor((tradeSize * leverage) / (price * cs));
                 const tp1Contracts = Math.floor(totalContracts / 2);
                 if (tp1Contracts >= 1) {
                   const tp1Timestamp = Date.now().toString();
                   const tp1Path = "/api/v2/mix/order/place-order";
+                  const PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3 };
+                  const priceDp = PRICE_DP[symbol] ?? 2;
                   const tp1Body = JSON.stringify({
                     symbol,
                     productType: "usdt-futures",
                     marginMode: "isolated",
                     marginCoin: "USDT",
                     size: String(tp1Contracts),
-                    price: levels.takeProfit1.toFixed(2),
+                    price: levels.takeProfit1.toFixed(priceDp),
                     side: direction === "long" ? "sell" : "buy",
-                    tradeSide: direction === "long" ? "close_long" : "close_short",
+                    tradeSide: "close",
                     orderType: "limit",
-                    reduceOnly: "YES",
                   });
                   const tp1Sig = signBitGet(tp1Timestamp, "POST", tp1Path, tp1Body);
                   const tp1Res = await fetch(`${CONFIG.bitget.baseUrl}${tp1Path}`, {
