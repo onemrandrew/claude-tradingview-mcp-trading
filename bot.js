@@ -585,7 +585,7 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
     const contracts = Math.floor((sizeUSD * leverage) / (price * contractSize));
     if (contracts < 1) throw new Error(`Trade size $${sizeUSD} too small for 1 contract at $${price}`);
 
-    const path = "/api/v2/mix/order/placeOrder";
+    const path = "/api/v2/mix/order/place-order";
     const body = JSON.stringify({
       symbol,
       productType: "usdt-futures",
@@ -642,7 +642,7 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
 
 async function placeTpslOrder(symbol, holdSide, planType, triggerPrice, size) {
   const timestamp = Date.now().toString();
-  const path = "/api/v2/mix/order/placeTpslOrder";
+  const path = "/api/v2/mix/order/place-tpsl-order";
   const body = JSON.stringify({
     symbol,
     productType:  "usdt-futures",
@@ -1169,7 +1169,7 @@ async function run() {
                 const tp1Contracts = Math.floor(totalContracts / 2);
                 if (tp1Contracts >= 1) {
                   const tp1Timestamp = Date.now().toString();
-                  const tp1Path = "/api/v2/mix/order/placeOrder";
+                  const tp1Path = "/api/v2/mix/order/place-order";
                   const tp1Body = JSON.stringify({
                     symbol,
                     productType: "usdt-futures",
