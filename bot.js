@@ -552,7 +552,7 @@ async function setFuturesLeverage(symbol, leverage, holdSide) {
     symbol,
     productType: "usdt-futures",
     marginCoin: "USDT",
-    lever: String(leverage),
+    lever: leverage,
     holdSide,
   });
   const sig = signBitGet(timestamp, "POST", path, body);
@@ -1172,7 +1172,10 @@ async function run() {
             logEntry.orderId = order.orderId;
             console.log(`✅ ENTRY ORDER PLACED — ${order.orderId}`);
 
-            // Place TP/SL orders immediately after entry
+            // Wait 1s for BitGet to register the position before placing TP/SL
+            await new Promise((r) => setTimeout(r, 1000));
+
+            // Place TP/SL orders after entry
             if (CONFIG.tradeMode === "futures") {
               const holdSide = direction === "long" ? "long" : "short";
               try {
