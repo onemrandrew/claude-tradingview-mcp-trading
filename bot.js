@@ -1162,7 +1162,9 @@ async function run() {
           console.log(`\n🔴 LIVE ORDER — ${chosen.style.toUpperCase()} ${direction.toUpperCase()} $${tradeSize.toFixed(2)} ${symbol} | ${leverage}x`);
           try {
             if (CONFIG.tradeMode === "futures") {
-              await setFuturesLeverage(symbol, leverage, direction === "long" ? "long" : "short");
+              // Set leverage for both sides so no stale manual setting can override
+              await setFuturesLeverage(symbol, leverage, "long");
+              await setFuturesLeverage(symbol, leverage, "short");
             }
             const side  = direction === "long" ? "buy" : "sell";
             const order = await placeBitGetOrder(symbol, side, tradeSize, price, leverage);
