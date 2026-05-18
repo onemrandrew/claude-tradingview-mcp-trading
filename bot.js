@@ -1004,16 +1004,17 @@ async function run() {
 
   const log = loadLog();
 
-  // SAFEGUARD: Open position check — bot does not stack positions
+  // SAFEGUARD: Open position check — one position per symbol max (no stacking same symbol)
   console.log("\n── Open Position Check ──────────────────────────────────\n");
+  const openSymbols = new Set();
   if (CONFIG.paperTrading) {
     const paperPos = await getPaperPosition();
     if (paperPos) {
-      console.log(`🛑 Open paper position on ${paperPos.symbol} — waiting for SL/TP2 to close.`);
-      console.log("Paper bot does not stack positions — exiting this run.");
-      return;
+      console.log(`🔵 Open paper position on ${paperPos.symbol} — will skip that symbol this run.`);
+      openSymbols.add(paperPos.symbol);
+    } else {
+      console.log("✅ No open paper position — clear to scan all symbols");
     }
-    console.log("✅ No open paper position — clear to scan");
   } else {
     let open;
     try {
@@ -1023,11 +1024,13 @@ async function run() {
       return;
     }
     if (open.length > 0) {
-      console.log(`🛑 Open position detected on ${open[0].symbol} (size ${open[0].total})`);
-      console.log("Bot does not stack positions — exiting until current trade closes.");
-      return;
+      open.forEach((p) => {
+        openSymbols.add(p.symbol);
+        console.log(`🔵 Open position: ${p.symbol} (size ${p.total}) — skipping this symbol`);
+      });
+    } else {
+      console.log("✅ No open positions — clear to scan all symbols");
     }
-    console.log("✅ No open positions — clear to scan");
   }
 
   if (!checkTradeLimits(log)) {
@@ -1035,16 +1038,25 @@ async function run() {
     return;
   }
 
-  // Scan all symbols, collect all setups
+  // Scan all symbols (skip any that already have an open position)
   const CONFIDENCE_THRESHOLD = rules.confidence_threshold?.minimum_to_trade ?? 80;
   const allSetups = [];
   for (const symbol of watchlist) {
+    if (openSymbols.has(symbol)) {
+      console.log(`⏭️  ${symbol} — skipping (position already open)`);
+      continue;
+    }
     try {
       const setups = await scanSymbol(symbol);
       allSetups.push(...setups);
     } catch (err) {
       console.log(`⚠️  ${symbol} scan failed: ${err.message} — skipping`);
     }
+  }
+
+  if (allSetups.length === 0 && openSymbols.size === watchlist.length) {
+    console.log("\n🛑 All watchlist symbols have open positions — nothing to scan this run.");
+    return;
   }
 
   // Filter to qualifying (>= threshold) and pick the best one
