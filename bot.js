@@ -552,7 +552,7 @@ async function setFuturesLeverage(symbol, leverage, holdSide) {
     symbol,
     productType: "usdt-futures",
     marginCoin: "USDT",
-    leverage: String(leverage),
+    lever: String(leverage),
     holdSide,
   });
   const sig = signBitGet(timestamp, "POST", path, body);
