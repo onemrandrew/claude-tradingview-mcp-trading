@@ -1182,7 +1182,9 @@ async function run() {
                 console.log(`⚠️  SL order failed: ${err.message} — CLOSE MANUALLY`);
                 logEntry.slError = err.message;
               }
-              // Place TP1 as Partial TP/SL (50% of position) — uses pos_profit TPSL with size
+              // Place TP1 as a limit close order at 50% of position size.
+              // BitGet only allows one pos_profit TPSL per position (used by TP2),
+              // so TP1 must be a regular limit order with tradeSide:"close".
               try {
                 const TP1_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
                 const TP1_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1  };
@@ -1193,8 +1195,34 @@ async function run() {
                 const fullSize   = Math.floor((tradeSize * leverage) / price / tp1Inc) * tp1Inc;
                 const tp1SizeAmt = Math.floor(fullSize / 2 / tp1Inc) * tp1Inc;
                 if (tp1SizeAmt >= tp1Inc) {
-                  await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit1, tp1SizeAmt.toFixed(tp1Dec));
-                  console.log(`✅ PARTIAL TP1 SET — ${tp1SizeAmt.toFixed(tp1Dec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit1.toFixed(priceDp)}`);
+                  const tp1Timestamp = Date.now().toString();
+                  const tp1Path = "/api/v2/mix/order/place-order";
+                  const tp1Body = JSON.stringify({
+                    symbol,
+                    productType: "usdt-futures",
+                    marginMode:  "isolated",
+                    marginCoin:  "USDT",
+                    size:        tp1SizeAmt.toFixed(tp1Dec),
+                    price:       levels.takeProfit1.toFixed(priceDp),
+                    side:        direction === "long" ? "sell" : "buy",
+                    tradeSide:   "close",
+                    orderType:   "limit",
+                  });
+                  const tp1Sig = signBitGet(tp1Timestamp, "POST", tp1Path, tp1Body);
+                  const tp1Res = await fetch(`${CONFIG.bitget.baseUrl}${tp1Path}`, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type":      "application/json",
+                      "ACCESS-KEY":        CONFIG.bitget.apiKey,
+                      "ACCESS-SIGN":       tp1Sig,
+                      "ACCESS-TIMESTAMP":  tp1Timestamp,
+                      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+                    },
+                    body: tp1Body,
+                  });
+                  const tp1Data = await tp1Res.json();
+                  if (tp1Data.code !== "00000") throw new Error(tp1Data.msg);
+                  console.log(`✅ TP1 limit order placed — ${tp1SizeAmt.toFixed(tp1Dec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit1.toFixed(priceDp)} (closes 50%)`);
                 } else {
                   console.log(`⚠️  TP1 skipped — position too small to split`);
                 }
