@@ -1178,65 +1178,49 @@ async function run() {
             // Place TP/SL orders after entry
             if (CONFIG.tradeMode === "futures") {
               const holdSide = direction === "long" ? "long" : "short";
+              // Shared size helpers for TP1 and TP2
+              const TP_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
+              const TP_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1  };
+              const PRICE_DP      = { BTCUSDT: 1,      ETHUSDT: 2,    SOLUSDT: 3  };
+              const tpInc   = TP_MULTIPLIER[symbol] ?? 0.0001;
+              const tpDec   = TP_DECIMALS[symbol]   ?? 4;
+              const priceDp = PRICE_DP[symbol]      ?? 2;
+              const fullSize = Math.floor((tradeSize * leverage) / price / tpInc) * tpInc;
+              const halfSize = Math.floor(fullSize / 2 / tpInc) * tpInc;
+
+              // SL — closes entire position
               try {
-                await placeTpslOrder(symbol, holdSide, "pos_loss",   levels.stopLoss,    undefined);
-                console.log(`✅ STOP LOSS SET  — $${levels.stopLoss.toFixed(2)}`);
+                await placeTpslOrder(symbol, holdSide, "pos_loss", levels.stopLoss, undefined);
+                console.log(`✅ STOP LOSS SET    — $${levels.stopLoss.toFixed(priceDp)}`);
               } catch (err) {
                 console.log(`⚠️  SL order failed: ${err.message} — CLOSE MANUALLY`);
                 logEntry.slError = err.message;
               }
-              // Place TP1 as a limit close order at 50% of position size.
-              // BitGet only allows one pos_profit TPSL per position (used by TP2),
-              // so TP1 must be a regular limit order with tradeSide:"close".
+
+              // TP1 — partial TPSL, closes 50% of position
               try {
-                const TP1_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
-                const TP1_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1  };
-                const PRICE_DP       = { BTCUSDT: 1,      ETHUSDT: 2,    SOLUSDT: 3  };
-                const tp1Inc  = TP1_MULTIPLIER[symbol] ?? 0.0001;
-                const tp1Dec  = TP1_DECIMALS[symbol]   ?? 4;
-                const priceDp = PRICE_DP[symbol]       ?? 2;
-                const fullSize   = Math.floor((tradeSize * leverage) / price / tp1Inc) * tp1Inc;
-                const tp1SizeAmt = Math.floor(fullSize / 2 / tp1Inc) * tp1Inc;
-                if (tp1SizeAmt >= tp1Inc) {
-                  const tp1Timestamp = Date.now().toString();
-                  const tp1Path = "/api/v2/mix/order/place-order";
-                  const tp1Body = JSON.stringify({
-                    symbol,
-                    productType: "usdt-futures",
-                    marginMode:  "isolated",
-                    marginCoin:  "USDT",
-                    size:        tp1SizeAmt.toFixed(tp1Dec),
-                    price:       levels.takeProfit1.toFixed(priceDp),
-                    side:        direction === "long" ? "sell" : "buy",
-                    tradeSide:   "close",
-                    orderType:   "limit",
-                  });
-                  const tp1Sig = signBitGet(tp1Timestamp, "POST", tp1Path, tp1Body);
-                  const tp1Res = await fetch(`${CONFIG.bitget.baseUrl}${tp1Path}`, {
-                    method: "POST",
-                    headers: {
-                      "Content-Type":      "application/json",
-                      "ACCESS-KEY":        CONFIG.bitget.apiKey,
-                      "ACCESS-SIGN":       tp1Sig,
-                      "ACCESS-TIMESTAMP":  tp1Timestamp,
-                      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
-                    },
-                    body: tp1Body,
-                  });
-                  const tp1Data = await tp1Res.json();
-                  if (tp1Data.code !== "00000") throw new Error(tp1Data.msg);
-                  console.log(`✅ TP1 limit order placed — ${tp1SizeAmt.toFixed(tp1Dec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit1.toFixed(priceDp)} (closes 50%)`);
+                if (halfSize >= tpInc) {
+                  await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit1, halfSize.toFixed(tpDec));
+                  console.log(`✅ PARTIAL TP1 SET  — ${halfSize.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit1.toFixed(priceDp)} (50%)`);
                 } else {
                   console.log(`⚠️  TP1 skipped — position too small to split`);
                 }
               } catch (err) {
-                console.log(`⚠️  TP1 order failed — relying on TP2 only: ${err.message}`);
+                console.log(`⚠️  TP1 order failed: ${err.message}`);
               }
+
+              // TP2 — partial TPSL, closes remaining 50%
               try {
-                await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit2, undefined);
-                console.log(`✅ TAKE PROFIT SET — $${levels.takeProfit2.toFixed(2)} (TP2, full close)`);
+                if (halfSize >= tpInc) {
+                  await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit2, halfSize.toFixed(tpDec));
+                  console.log(`✅ PARTIAL TP2 SET  — ${halfSize.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit2.toFixed(priceDp)} (remaining 50%)`);
+                } else {
+                  // Position too small to split — close entire position at TP2
+                  await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit2, undefined);
+                  console.log(`✅ TP2 SET — $${levels.takeProfit2.toFixed(priceDp)} (entire close)`);
+                }
               } catch (err) {
-                console.log(`⚠️  TP order failed: ${err.message} — monitor manually`);
+                console.log(`⚠️  TP2 order failed: ${err.message} — monitor manually`);
                 logEntry.tpError = err.message;
               }
             }
