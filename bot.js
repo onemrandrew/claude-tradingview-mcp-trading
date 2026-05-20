@@ -1204,11 +1204,39 @@ async function run() {
                 logEntry.slError = err.message;
               }
 
-              // TP1 — partial TPSL, closes 50% of position
+              // TP1 — limit close order at 50% of position.
+              // BitGet only has one pos_profit TPSL slot (used by TP2 below).
+              // A limit close order achieves the same partial exit and sits in Open Orders.
               try {
                 if (halfSize >= tpInc) {
-                  await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit1, halfSize.toFixed(tpDec));
-                  console.log(`✅ PARTIAL TP1 SET  — ${halfSize.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit1.toFixed(priceDp)} (50%)`);
+                  const tp1Timestamp = Date.now().toString();
+                  const tp1Path = "/api/v2/mix/order/place-order";
+                  const tp1Body = JSON.stringify({
+                    symbol,
+                    productType: "usdt-futures",
+                    marginMode:  "isolated",
+                    marginCoin:  "USDT",
+                    size:        halfSize.toFixed(tpDec),
+                    price:       levels.takeProfit1.toFixed(priceDp),
+                    side:        direction === "long" ? "sell" : "buy",
+                    tradeSide:   "close",
+                    orderType:   "limit",
+                  });
+                  const tp1Sig = signBitGet(tp1Timestamp, "POST", tp1Path, tp1Body);
+                  const tp1Res = await fetch(`${CONFIG.bitget.baseUrl}${tp1Path}`, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type":      "application/json",
+                      "ACCESS-KEY":        CONFIG.bitget.apiKey,
+                      "ACCESS-SIGN":       tp1Sig,
+                      "ACCESS-TIMESTAMP":  tp1Timestamp,
+                      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+                    },
+                    body: tp1Body,
+                  });
+                  const tp1Data = await tp1Res.json();
+                  if (tp1Data.code !== "00000") throw new Error(tp1Data.msg);
+                  console.log(`✅ TP1 SET — ${halfSize.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit1.toFixed(priceDp)} (50% close, in Open Orders)`);
                 } else {
                   console.log(`⚠️  TP1 skipped — position too small to split`);
                 }
@@ -1216,16 +1244,10 @@ async function run() {
                 console.log(`⚠️  TP1 order failed: ${err.message}`);
               }
 
-              // TP2 — partial TPSL, closes remaining 50%
+              // TP2 — pos_profit TPSL, closes entire remaining position
               try {
-                if (halfSize >= tpInc) {
-                  await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit2, halfSize.toFixed(tpDec));
-                  console.log(`✅ PARTIAL TP2 SET  — ${halfSize.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit2.toFixed(priceDp)} (remaining 50%)`);
-                } else {
-                  // Position too small to split — close entire position at TP2
-                  await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit2, undefined);
-                  console.log(`✅ TP2 SET — $${levels.takeProfit2.toFixed(priceDp)} (entire close)`);
-                }
+                await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit2, undefined);
+                console.log(`✅ TP2 SET — $${levels.takeProfit2.toFixed(priceDp)} (entire remaining close, in Entire TP/SL)`);
               } catch (err) {
                 console.log(`⚠️  TP2 order failed: ${err.message} — monitor manually`);
                 logEntry.tpError = err.message;
