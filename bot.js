@@ -686,9 +686,11 @@ async function placeTpslOrder(symbol, holdSide, planType, triggerPrice, size) {
 //   TP2: 4.5 × ATR  above entry (long)  / below entry (short)  → close remaining 50%
 // Scalp uses tighter multipliers: SL 1.0×, TP1 1.5×, TP2 3.0×
 function computeLevels(direction, entryPrice, atr, style) {
+  // Wider stops give trades more room before noise triggers the SL.
+  // R:R is preserved at 1.5:1 (TP1) and 3:1 (TP2) across all styles.
   const mult = style === "scalp"
-    ? { sl: 1.0, tp1: 1.5, tp2: 3.0 }
-    : { sl: 1.5, tp1: 2.25, tp2: 4.5 };
+    ? { sl: 1.5, tp1: 2.25, tp2: 4.5 }   // was 1.0/1.5/3.0 — matched day_trade now
+    : { sl: 2.0, tp1: 3.0,  tp2: 6.0 };  // was 1.5/2.25/4.5 — wider room to breathe
 
   if (direction === "long") {
     return {
@@ -1059,8 +1061,13 @@ async function run() {
     return;
   }
 
-  // Filter to qualifying (>= threshold) and pick the best one
-  const qualifying = allSetups.filter((s) => s.score >= CONFIDENCE_THRESHOLD);
+  // Filter to qualifying setups.
+  // Scalps require 90+ — tight stops on 5m charts are too vulnerable to noise
+  // at minimum confidence. Day trade and swing require the global threshold.
+  const qualifying = allSetups.filter((s) => {
+    const min = s.style === "scalp" ? 90 : CONFIDENCE_THRESHOLD;
+    return s.score >= min;
+  });
 
   // Tiebreaker: if within 5 pts, prefer higher timeframe (swing > day_trade > scalp)
   const styleRank = { swing: 0, day_trade: 1, scalp: 2 };
