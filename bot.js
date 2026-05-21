@@ -1154,6 +1154,19 @@ async function run() {
         const levels = computeLevels(direction, price, atr, chosen.style);
         logEntry.levels = levels;
 
+        // ATR floor: reject if SL distance is less than 0.1% of price.
+        // This catches ultra-compressed volatility periods where the stop
+        // would sit inside normal single-candle noise (e.g. SOL 0.069pt stop).
+        const slDistancePct = Math.abs(levels.stopLoss - price) / price;
+        if (slDistancePct < 0.001) {
+          console.log(`\n🛑 TRADE ABORTED — ATR too compressed (SL is only ${(slDistancePct * 100).toFixed(3)}% from entry — minimum 0.1%). Wait for higher-volatility conditions.`);
+          logEntry.allPass = false;
+          logEntry.vetoed = true;
+          logEntry.vetoReason = `ATR too compressed: SL distance ${(slDistancePct * 100).toFixed(3)}% < 0.1%`;
+          safeWriteLog(LOG_FILE, log);
+          return;
+        }
+
         console.log(`\n── SL / TP Levels (ATR = $${atr.toFixed(2)}) ──────────────\n`);
         console.log(`  Entry      : $${price.toFixed(2)}`);
         console.log(`  Stop Loss  : $${levels.stopLoss.toFixed(2)}  (1.5 × ATR below entry)`);
