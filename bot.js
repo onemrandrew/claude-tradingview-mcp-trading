@@ -107,6 +107,26 @@ function countTodaysTrades(log) {
   return log.trades.filter((t) => ptDate(t.timestamp) === today && t.orderPlaced).length;
 }
 
+// Circuit breaker: pause if the last N placed trades all hit SL.
+// Prevents the bot from continuing to trade when market conditions are
+// clearly wrong (e.g. choppy range day, algorithm mismatch).
+function consecutiveLossCircuitBreaker(log, maxConsecutiveLosses = 3) {
+  const placed = log.trades.filter((t) => t.orderPlaced).slice(-maxConsecutiveLosses);
+  if (placed.length < maxConsecutiveLosses) return false; // not enough history
+  const allLosses = placed.every((t) => t.outcome === "SL" || t.outcome === "loss");
+  return allLosses;
+}
+
+// Session filter: scalps only during high-liquidity windows (UTC).
+// Asian session (22:00–08:00 UTC) is low volume — market makers widen spreads
+// and hunt stops more aggressively. Scalps work best during London/NY overlap.
+function isHighLiquiditySession() {
+  const utcHour = new Date().getUTCHours();
+  // London open: 07:00–12:00 UTC | NY session: 13:00–21:00 UTC
+  // Block 22:00–06:59 UTC (Asian session / pre-London dead zone)
+  return utcHour >= 7 && utcHour <= 21;
+}
+
 // ─── Market Data (BitGet public API) ─────────────────────────────────────────
 
 async function fetchCandles(symbol, interval, limit = 100) {
@@ -223,6 +243,45 @@ function calcMACD(closes, fast = 12, slow = 26, signal = 9) {
 
   const macdLine = macdSeries[macdSeries.length - 1];
   return { macdLine, signalLine, histogram: macdLine - signalLine };
+}
+
+// ADX (Average Directional Index) — measures trend strength, not direction.
+// ADX > 25: market is trending (good for trend-following entries).
+// ADX < 20: market is ranging/choppy (trend signals are noise — stay out).
+// Returns { adx, plusDI, minusDI } or null if not enough data.
+function calcADX(candles, period = 14) {
+  if (candles.length < period * 2) return null;
+  const trs = [], plusDMs = [], minusDMs = [];
+  for (let i = 1; i < candles.length; i++) {
+    const h = candles[i].high, l = candles[i].low;
+    const ph = candles[i - 1].high, pl = candles[i - 1].low, pc = candles[i - 1].close;
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+    const upMove = h - ph, downMove = pl - l;
+    plusDMs.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusDMs.push(downMove > upMove && downMove > 0 ? downMove : 0);
+  }
+  // Wilder smoothing (same as ATR)
+  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0);
+  let pDM = plusDMs.slice(0, period).reduce((a, b) => a + b, 0);
+  let mDM = minusDMs.slice(0, period).reduce((a, b) => a + b, 0);
+  const dxValues = [];
+  for (let i = period; i < trs.length; i++) {
+    atr = atr - atr / period + trs[i];
+    pDM = pDM - pDM / period + plusDMs[i];
+    mDM = mDM - mDM / period + minusDMs[i];
+    if (atr === 0) continue;
+    const pDI = (pDM / atr) * 100;
+    const mDI = (mDM / atr) * 100;
+    const dx  = Math.abs(pDI - mDI) / (pDI + mDI) * 100;
+    dxValues.push({ dx, pDI, mDI });
+  }
+  if (dxValues.length < period) return null;
+  let adx = dxValues.slice(0, period).reduce((a, b) => a + b.dx, 0) / period;
+  for (let i = period; i < dxValues.length; i++) {
+    adx = (adx * (period - 1) + dxValues[i].dx) / period;
+  }
+  const last = dxValues[dxValues.length - 1];
+  return { adx, plusDI: last.pDI, minusDI: last.mDI };
 }
 
 // EMA crossover detection (looks at current and previous bar)
@@ -359,6 +418,22 @@ function scoreScalp(c5m, c15m, vwap, direction) {
   const cross      = detectCrossover(closes5m, 9, 21);
   const volOK      = volumeAboveMA(c5m, 20, 1.5);
   const atr7_5m    = calcATR(c5m, 7);
+
+  // Session filter: scalps only during London/NY sessions (07:00–21:00 UTC).
+  // Asian session has low volume, wide spreads, and aggressive stop hunting.
+  if (!isHighLiquiditySession()) {
+    const utcHour = new Date().getUTCHours();
+    console.log(`⏭️  Scalp skipped — Asian/pre-London session (UTC ${utcHour}:xx, outside 07:00–21:00 window)`);
+    return { score: 0, direction, conditions: [], atr: atr7_5m, price, style: "scalp" };
+  }
+
+  // ADX filter: only scalp when the market is actually trending (ADX ≥ 20).
+  // Below 20 = ranging/choppy — trend signals are random noise in these conditions.
+  const adx5m = calcADX(c5m, 14);
+  if (adx5m && adx5m.adx < 20) {
+    console.log(`⏭️  Scalp skipped — ADX ${adx5m.adx.toFixed(1)} < 20 (market ranging, not trending)`);
+    return { score: 0, direction, conditions: [], atr: atr7_5m, price, style: "scalp" };
+  }
 
   const atrBase5m = calcATR(c5m, 20);
   if (atrBase5m && atr7_5m && atr7_5m > atrBase5m * 3) {
@@ -811,11 +886,10 @@ async function scanSymbol(symbol) {
 
 // Confidence-based leverage selector (per rules.json)
 function leverageForStyle(style, score) {
-  // Tiers tuned for small accounts — need enough notional to cover min contract sizes.
-  // scalp: 5x | day_trade: 3x | swing: 2x
-  // Score 80–89: one step lower; 90+: full tier
-  const styleMax = { scalp: 5, day_trade: 3, swing: 2 }[style] ?? 2;
-  const reduced  = score < 90 ? Math.max(2, styleMax - 1) : styleMax;
+  // Matches rules.json exactly: scalp 3x | day_trade 2x | swing 1x
+  // Score 90+: full tier. Score 80–89: one step lower (min 1x).
+  const styleMax = { scalp: 3, day_trade: 2, swing: 1 }[style] ?? 1;
+  const reduced  = score < 90 ? Math.max(1, styleMax - 1) : styleMax;
   return Math.min(reduced, CONFIG.maxLeverage);
 }
 
@@ -1046,6 +1120,15 @@ async function run() {
 
   if (!checkTradeLimits(log)) {
     console.log("\nBot stopping — trade limits reached for today.");
+    return;
+  }
+
+  // Circuit breaker: pause if last 3 placed trades were all SL hits.
+  // If the bot has taken 3 consecutive losses, market conditions are likely
+  // adverse — stop trading until conditions reset (next day or manual override).
+  if (consecutiveLossCircuitBreaker(log, 3)) {
+    console.log("\n🛑 CIRCUIT BREAKER — Last 3 trades all hit SL. Pausing until conditions improve.");
+    console.log("   Check the log, assess market conditions, and ensure the strategy still fits.");
     return;
   }
 
