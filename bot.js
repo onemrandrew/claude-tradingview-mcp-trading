@@ -10,7 +10,7 @@
  */
 
 import "dotenv/config";
-import { readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from "fs";
 import crypto from "crypto";
 import { execSync } from "child_process";
 
@@ -76,7 +76,11 @@ const CONFIG = {
   },
 };
 
-const LOG_FILE = "safety-check-log.json";
+// Use /app/data when running on Railway (volume mounted there), fallback to local for dev.
+// /app/data is the Railway Volume mount point — files here survive deploys and restarts.
+const DATA_DIR = process.env.RAILWAY_ENVIRONMENT ? "/app/data" : ".";
+if (process.env.RAILWAY_ENVIRONMENT) mkdirSync(DATA_DIR, { recursive: true });
+const LOG_FILE = `${DATA_DIR}/safety-check-log.json`;
 
 // ─── Timezone helpers ─────────────────────────────────────────────────────────
 function ptDate(date) {
@@ -1246,7 +1250,7 @@ function leverageForStyle(style, score) {
 
 // ─── Tax CSV ──────────────────────────────────────────────────────────────────
 
-const CSV_FILE = "trades.csv";
+const CSV_FILE = `${DATA_DIR}/trades.csv`;
 const CSV_HEADERS = [
   "Date (PT)","Time (PT)","Exchange","Symbol","Side","Quantity",
   "Price","Total USD","Fee (est.)","Net Amount","ATR","Stop Loss","TP1","TP2","Order ID","Mode","Notes",
