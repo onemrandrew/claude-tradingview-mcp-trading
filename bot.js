@@ -174,8 +174,9 @@ async function inferTradeOutcomes(log, openPositionSymbols) {
         const executed  = planOrders.filter(
           (o) => o.state === "executed" || o.status === "executed" || o.executeTime
         );
+        // SL: pos_loss TPSL | TP: profit_plan (new) or pos_profit (legacy)
         const slOrder   = executed.find((o) => o.planType === "pos_loss");
-        const tpOrder   = executed.find((o) => o.planType === "pos_profit");
+        const tpOrder   = executed.find((o) => o.planType === "profit_plan" || o.planType === "pos_profit");
 
         if (slOrder) {
           t.outcome     = "SL";
@@ -923,9 +924,18 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
 }
 
 // ─── BitGet TP/SL Orders ──────────────────────────────────────────────────────
-// Places separate take-profit and stop-loss trigger orders after an entry.
-// BitGet endpoint: /api/v2/mix/order/place-tpsl-order
-// planType: "pos_profit" = take profit  |  "pos_loss" = stop loss
+// Two separate order types used for exits:
+//
+// placeTpslOrder  — /api/v2/mix/order/place-tpsl-order
+//   Used ONLY for the stop loss (pos_loss). One pos_loss per position, no size
+//   needed (closes full position). BitGet only allows one active pos_profit TPSL
+//   per position, so we do NOT use this for TPs.
+//
+// placePlanOrder  — /api/v2/mix/order/place-plan-order
+//   Used for TP1 and TP2. Multiple profit_plan orders can coexist on the same
+//   position, each with its own size. This is how we get two partial TPs:
+//   TP1 closes 50%, TP2 closes the remaining 50%. Both appear in BitGet's
+//   "Plan Orders" section as separate conditional orders.
 
 async function placeTpslOrder(symbol, holdSide, planType, triggerPrice, size) {
   const timestamp = Date.now().toString();
@@ -941,7 +951,6 @@ async function placeTpslOrder(symbol, holdSide, planType, triggerPrice, size) {
     triggerType:  "mark_price",
     holdSide,
     size:         size !== undefined ? String(size) : undefined,
-    // size omitted → closes the whole position (used for SL and full-exit TP)
   });
   const sig = signBitGet(timestamp, "POST", path, body);
   const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
@@ -956,7 +965,50 @@ async function placeTpslOrder(symbol, holdSide, planType, triggerPrice, size) {
     body,
   });
   const data = await res.json();
-  if (data.code !== "00000") throw new Error(`TP/SL order failed (${planType}): ${data.msg}`);
+  if (data.code !== "00000") throw new Error(`TPSL order failed (${planType}): ${data.msg}`);
+  return data.data;
+}
+
+// Partial TP plan order — /api/v2/mix/order/place-plan-order
+// planType "profit_plan": multiple can be active simultaneously (unlike pos_profit TPSL).
+// triggerPrice = when to activate | price = limit execution price (set equal for guaranteed fill).
+// holdSide "long" → side "sell" to close | "short" → side "buy" to close.
+async function placePlanOrder(symbol, holdSide, triggerPrice, size) {
+  const timestamp = Date.now().toString();
+  const path = "/api/v2/mix/order/place-plan-order";
+  const PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3 };
+  const SIZE_DP  = { BTCUSDT: 4, ETHUSDT: 2, SOLUSDT: 1 };
+  const priceDp  = PRICE_DP[symbol] ?? 2;
+  const sizeDp   = SIZE_DP[symbol]  ?? 4;
+  const side     = holdSide === "long" ? "sell" : "buy";
+  const body = JSON.stringify({
+    symbol,
+    productType:  "usdt-futures",
+    marginMode:   "isolated",
+    marginCoin:   "USDT",
+    size:         size.toFixed(sizeDp),
+    side,
+    tradeSide:    "close",
+    orderType:    "limit",
+    price:        triggerPrice.toFixed(priceDp),    // limit price = trigger price
+    triggerPrice: triggerPrice.toFixed(priceDp),
+    triggerType:  "mark_price",
+    planType:     "profit_plan",
+  });
+  const sig = signBitGet(timestamp, "POST", path, body);
+  const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type":      "application/json",
+      "ACCESS-KEY":        CONFIG.bitget.apiKey,
+      "ACCESS-SIGN":       sig,
+      "ACCESS-TIMESTAMP":  timestamp,
+      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+    },
+    body,
+  });
+  const data = await res.json();
+  if (data.code !== "00000") throw new Error(`Plan TP order failed: ${data.msg}`);
   return data.data;
 }
 
@@ -1736,53 +1788,30 @@ async function run() {
                 logEntry.slError = err.message;
               }
 
-              // TP1 — limit close order at 50% of position.
-              // BitGet only has one pos_profit TPSL slot (used by TP2 below).
-              // A limit close order achieves the same partial exit and sits in Open Orders.
+              // TP1 — profit_plan order, closes exactly 50% of position.
+              // Uses place-plan-order (not place-tpsl-order) so it can coexist with TP2.
+              // Multiple profit_plan orders can be active simultaneously; pos_profit cannot.
               try {
                 if (halfSize >= tpInc) {
-                  const tp1Timestamp = Date.now().toString();
-                  const tp1Path = "/api/v2/mix/order/place-order";
-                  const tp1Body = JSON.stringify({
-                    symbol,
-                    productType: "usdt-futures",
-                    marginMode:  "isolated",
-                    marginCoin:  "USDT",
-                    size:        halfSize.toFixed(tpDec),
-                    price:       levels.takeProfit1.toFixed(priceDp),
-                    side:        direction === "long" ? "sell" : "buy",
-                    tradeSide:   "close",
-                    orderType:   "limit",
-                  });
-                  const tp1Sig = signBitGet(tp1Timestamp, "POST", tp1Path, tp1Body);
-                  const tp1Res = await fetch(`${CONFIG.bitget.baseUrl}${tp1Path}`, {
-                    method: "POST",
-                    headers: {
-                      "Content-Type":      "application/json",
-                      "ACCESS-KEY":        CONFIG.bitget.apiKey,
-                      "ACCESS-SIGN":       tp1Sig,
-                      "ACCESS-TIMESTAMP":  tp1Timestamp,
-                      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
-                    },
-                    body: tp1Body,
-                  });
-                  const tp1Data = await tp1Res.json();
-                  if (tp1Data.code !== "00000") throw new Error(tp1Data.msg);
-                  console.log(`✅ TP1 SET — ${halfSize.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit1.toFixed(priceDp)} (50% close, in Open Orders)`);
+                  await placePlanOrder(symbol, holdSide, levels.takeProfit1, halfSize);
+                  console.log(`✅ TP1 SET — ${halfSize.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit1.toFixed(priceDp)} (50% partial close, in Plan Orders)`);
                 } else {
-                  console.log(`⚠️  TP1 skipped — position too small to split`);
+                  console.log(`⚠️  TP1 skipped — position too small to split (${fullSize.toFixed(tpDec)} < 2 × ${tpInc})`);
                 }
               } catch (err) {
                 console.log(`⚠️  TP1 order failed: ${err.message}`);
+                logEntry.tp1Error = err.message;
               }
 
-              // TP2 — pos_profit TPSL, closes entire remaining position
+              // TP2 — profit_plan order, closes the remaining 50%.
+              // If TP1 was skipped (too small), TP2 closes the full position instead.
               try {
-                await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit2, undefined);
-                console.log(`✅ TP2 SET — $${levels.takeProfit2.toFixed(priceDp)} (entire remaining close, in Entire TP/SL)`);
+                const tp2Size = halfSize >= tpInc ? halfSize : fullSize;
+                await placePlanOrder(symbol, holdSide, levels.takeProfit2, tp2Size);
+                console.log(`✅ TP2 SET — ${tp2Size.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit2.toFixed(priceDp)} (remaining close, in Plan Orders)`);
               } catch (err) {
                 console.log(`⚠️  TP2 order failed: ${err.message} — monitor manually`);
-                logEntry.tpError = err.message;
+                logEntry.tp2Error = err.message;
               }
             }
           } catch (err) {
