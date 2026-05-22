@@ -107,30 +107,89 @@ function countTodaysTrades(log) {
   return log.trades.filter((t) => ptDate(t.timestamp) === today && t.orderPlaced).length;
 }
 
-// Outcome inference: called each run to mark trade log entries as won/lost.
-// We can't know the exact close price from BitGet without fetching order history,
-// so we infer from current price vs SL/TP levels. This is a best-effort estimate:
-// - If price has crossed TP1 direction → likely TP
-// - If price has crossed SL direction  → likely SL
-// - Otherwise                          → closed_unknown (treat as loss for safety)
-// Call this BEFORE the circuit breaker check.
-function inferTradeOutcomes(log, openPositionSymbols) {
+// ─── BitGet Plan Order History ────────────────────────────────────────────────
+// Fetches executed TPSL plan orders (pos_loss = SL, pos_profit = TP) for a symbol
+// since a given timestamp. Used by inferTradeOutcomes to determine real win/loss.
+async function fetchClosedPlanOrders(symbol, sinceMs) {
+  if (!CONFIG.bitget.apiKey) return [];
+  const timestamp = Date.now().toString();
+  const startTime = String(sinceMs);
+  const endTime   = String(Date.now());
+  const path = `/api/v2/mix/order/plan-orders-history?symbol=${symbol}&productType=usdt-futures&startTime=${startTime}&endTime=${endTime}&pageSize=50`;
+  const sig  = signBitGet(timestamp, "GET", path, "");
+  try {
+    const res  = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
+      headers: {
+        "ACCESS-KEY":        CONFIG.bitget.apiKey,
+        "ACCESS-SIGN":       sig,
+        "ACCESS-TIMESTAMP":  timestamp,
+        "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+      },
+    });
+    const data = await res.json();
+    if (data.code !== "00000") return [];
+    // BitGet v2 returns data.data.entrustedList or data.data directly
+    const list = Array.isArray(data.data) ? data.data : (data.data?.entrustedList ?? []);
+    return list;
+  } catch {
+    return [];
+  }
+}
+
+// Outcome resolution: called each run to mark trade log entries as won/lost.
+// Uses BitGet plan order history (the actual TPSL trigger records) — not guessing
+// from current price. This makes the circuit breaker accurate: it only fires on
+// real consecutive SL hits, not on TP wins or time-exits.
+//
+// Outcomes:
+//   "SL"           — pos_loss plan order executed (stop loss triggered)
+//   "TP"           — pos_profit plan order executed (take profit triggered)
+//   "closed_market"— position closed but no TPSL triggered (time-exit or manual)
+//   "closed_unknown"— paper mode, or API call failed
+//
+// Circuit breaker only counts "SL" and "closed_unknown" as losses.
+async function inferTradeOutcomes(log, openPositionSymbols) {
   const openSet = new Set(openPositionSymbols);
   let changed = false;
+
   for (const t of log.trades) {
-    if (!t.orderPlaced || t.error || t.outcome) continue; // skip if already resolved
-    if (openSet.has(t.symbol)) continue;                   // still open — leave it
-    // Position is gone. Infer outcome from current price vs levels.
-    // NOTE: current price may differ from actual close price. This is approximate.
-    // For a definitive record, check BitGet order history manually.
-    t.closedAt = t.closedAt || new Date().toISOString(); // first time we notice it's gone
-    if (!t.levels || !t.price) {
+    if (!t.orderPlaced || t.error || t.outcome) continue; // already resolved
+    if (openSet.has(t.symbol)) continue;                   // still open
+
+    t.closedAt = t.closedAt || new Date().toISOString();
+
+    if (CONFIG.paperTrading || !CONFIG.bitget.apiKey) {
+      // Paper mode: no real orders, can't look up history
       t.outcome = "closed_unknown";
     } else {
-      const { stopLoss, takeProfit1 } = t.levels;
-      // We don't have current price here — set outcome to "closed_unknown" for now.
-      // The manageOpenPositions function updates this with actual price context.
-      t.outcome = t.outcome || "closed_unknown";
+      try {
+        const sinceMs   = new Date(t.timestamp).getTime();
+        const planOrders = await fetchClosedPlanOrders(t.symbol, sinceMs);
+
+        // "executed" is the triggered state on BitGet plan orders
+        const executed  = planOrders.filter(
+          (o) => o.state === "executed" || o.status === "executed" || o.executeTime
+        );
+        const slOrder   = executed.find((o) => o.planType === "pos_loss");
+        const tpOrder   = executed.find((o) => o.planType === "pos_profit");
+
+        if (slOrder) {
+          t.outcome     = "SL";
+          t.closePrice  = parseFloat(slOrder.executePrice || slOrder.triggerPrice || 0) || undefined;
+          console.log(`📋 Outcome resolved: ${t.symbol} → SL hit at $${t.closePrice ?? "?"}`);
+        } else if (tpOrder) {
+          t.outcome     = "TP";
+          t.closePrice  = parseFloat(tpOrder.executePrice || tpOrder.triggerPrice || 0) || undefined;
+          console.log(`📋 Outcome resolved: ${t.symbol} → TP hit at $${t.closePrice ?? "?"}`);
+        } else {
+          // Position gone but no TPSL triggered — time-exit or manual close
+          t.outcome = "closed_market";
+          console.log(`📋 Outcome resolved: ${t.symbol} → closed at market (time-exit or manual)`);
+        }
+      } catch (err) {
+        t.outcome = "closed_unknown";
+        console.log(`⚠️  Could not resolve outcome for ${t.symbol}: ${err.message}`);
+      }
     }
     changed = true;
   }
@@ -138,9 +197,10 @@ function inferTradeOutcomes(log, openPositionSymbols) {
 }
 
 // Circuit breaker: pause if the last N completed trades were all losses.
-// Works correctly now that inferTradeOutcomes populates the outcome field.
-// "closed_unknown" is treated as a loss (conservative — we'd rather pause than
-// keep trading blindly when the outcome is unclear).
+// Now that inferTradeOutcomes fetches real TPSL history, outcomes are accurate:
+//   Loss outcomes : "SL", "loss", "closed_unknown" (API failed — assume worst)
+//   Win outcomes  : "TP", "closed_market" (time-exit — neutral, not a loss)
+// A TP win resets the streak — bot will NOT be paused after 2 losses + 1 TP + 2 losses.
 function consecutiveLossCircuitBreaker(log, maxConsecutiveLosses = 3) {
   const completed = log.trades
     .filter((t) => t.orderPlaced && !t.error && t.outcome)
@@ -148,6 +208,7 @@ function consecutiveLossCircuitBreaker(log, maxConsecutiveLosses = 3) {
   if (completed.length < maxConsecutiveLosses) return false;
   const allLosses = completed.every(
     (t) => t.outcome === "SL" || t.outcome === "loss" || t.outcome === "closed_unknown"
+    // "TP" and "closed_market" are wins/neutrals — they break the loss streak
   );
   return allLosses;
 }
@@ -1418,8 +1479,9 @@ async function run() {
       await manageOpenPositions(liveOpenPositions, log);
     }
 
-    // Infer outcomes for trades whose positions are now closed — makes circuit breaker reliable
-    const changed = inferTradeOutcomes(log, [...openSymbols]);
+    // Resolve outcomes for trades whose positions are now closed.
+    // Fetches real TPSL trigger history from BitGet so circuit breaker only fires on real losses.
+    const changed = await inferTradeOutcomes(log, [...openSymbols]);
     if (changed) saveLog(log);
   }
 
@@ -1465,11 +1527,19 @@ async function run() {
     return;
   }
 
-  // Filter to qualifying setups.
-  // Scalps require 90+ — tight stops on 5m charts are too vulnerable to noise.
+  // Filter to qualifying setups — day_trade and swing only.
+  //
+  // SCALP DISABLED: scalp signals live on 5-minute candles and expire within minutes.
+  // This bot runs on an hourly cron — by the time the next run fires, a 5m signal from
+  // 55 minutes ago is meaningless. Entering on stale scalp signals is a primary cause
+  // of SL hits: the entry is mid-move, not at the exhaustion point the RSI gate was
+  // designed to catch. Day_trade (1H signals) and swing (4H signals) remain valid for
+  // hours, making them the right styles for an hourly bot.
+  //
+  // To re-enable scalp: change railway.json cronSchedule to "*/5 * * * *" (every 5 min).
   let qualifying = allSetups.filter((s) => {
-    const min = s.style === "scalp" ? 90 : CONFIDENCE_THRESHOLD;
-    return s.score >= min;
+    if (s.style === "scalp") return false; // disabled — hourly cron, stale 5m signals
+    return s.score >= CONFIDENCE_THRESHOLD;
   });
 
   // Post-SL cooldown: skip symbols where a trade was placed in the last 2 hours.
