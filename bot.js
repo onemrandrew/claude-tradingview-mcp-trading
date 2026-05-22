@@ -694,6 +694,13 @@ function scoreSwing(c4h, c1d, direction) {
     return { score: 0, direction: null, conditions: [], atr: atr14_4h, price, style: "swing" };
   }
 
+  // ADX filter: skip swing in ranging 4H markets (same pattern as scalp/day_trade)
+  const adx4h = calcADX(c4h, 14);
+  if (adx4h && adx4h.adx < 20) {
+    console.log(`⚠️  ADX(14) on 4H = ${adx4h.adx.toFixed(1)} < 20 — ranging market, skip swing`);
+    return { score: 0, direction, conditions: [], atr: atr14_4h, price, style: "swing" };
+  }
+
   const conditions = [];
   const check = (label, pass) => conditions.push({ label, pass: !!pass });
 
@@ -1092,13 +1099,16 @@ async function getFundingRate(symbol) {
 async function scanSymbol(symbol) {
   console.log(`\n── Scanning ${symbol} ─────────────────────────────────\n`);
 
-  // Fetch in parallel for speed
+  // Fetch in parallel for speed.
+  // 1H/4H need 250 bars so EMA(200) uses a full 200-period window (not truncated to 99).
+  // 1D needs 300 bars for the same reason — daily candle history is shallower on BitGet.
+  // 5m/15m only need recent data for scalp indicators; 100 bars is fine.
   const [c5m, c15m, c1h, c4h, c1d, funding] = await Promise.all([
     fetchCandles(symbol, "5m",  100),
     fetchCandles(symbol, "15m", 100),
-    fetchCandles(symbol, "1H",  100),
-    fetchCandles(symbol, "4H",  100),
-    fetchCandles(symbol, "1D",  100),
+    fetchCandles(symbol, "1H",  250),
+    fetchCandles(symbol, "4H",  250),
+    fetchCandles(symbol, "1D",  300),
     getFundingRate(symbol),
   ]);
 
@@ -1134,6 +1144,34 @@ async function scanSymbol(symbol) {
   }
 
   return setups;
+}
+
+// ─── Volatility-Adjusted Position Sizing ─────────────────────────────────────
+// Sizes each trade so that hitting the stop loss costs exactly riskPct of portfolio.
+// This is standard professional risk management: a wide stop → smaller size,
+// a tight stop → larger size, but the dollar loss at the SL is always the same.
+//
+// Formula:
+//   riskUSD    = portfolioValue × riskPct          (e.g. $10 on $1000 @ 1%)
+//   notional   = riskUSD / stopDistancePct         (position size so SL = riskUSD loss)
+//   margin     = notional / leverage               (collateral BitGet will hold)
+//   tradeSize  = min(margin, maxUSD)               (never exceed the configured cap)
+//
+// Example: $1000 portfolio, 1% risk, 4H swing stop 3% away, 1x leverage:
+//   riskUSD = $10  |  notional = $10/0.03 = $333  |  margin = $333/1 = $333 → capped $100
+//
+// Example: $1000 portfolio, 1% risk, scalp stop 0.5% away, 3x leverage:
+//   riskUSD = $10  |  notional = $10/0.005 = $2000  |  margin = $2000/3 = $667 → capped $100
+//
+// When the stop distance can't be computed, falls back to flat 10% of portfolio.
+function volAdjustedTradeSize(portfolioValue, stopDistancePct, leverage, maxUSD, riskPct = 0.01) {
+  if (!stopDistancePct || stopDistancePct <= 0) {
+    return Math.min(portfolioValue * 0.10, maxUSD); // flat fallback
+  }
+  const riskUSD  = portfolioValue * riskPct;
+  const notional = riskUSD / stopDistancePct;
+  const margin   = notional / leverage;
+  return Math.min(margin, maxUSD);
 }
 
 // Confidence-based leverage selector (per rules.json)
@@ -1490,9 +1528,11 @@ async function run() {
     chosen.conditions.forEach((c) => console.log(`  ${c.pass ? "✅" : "🚫"} ${c.label}`));
   }
 
-  // Trade size & leverage (confidence-scaled)
-  const tradeSize = Math.min(CONFIG.portfolioValue * 0.10, CONFIG.maxTradeSizeUSD);
+  // Leverage (confidence-scaled). Trade size is computed later, after SL distance is known.
   const leverage  = chosen ? leverageForStyle(chosen.style, chosen.score) : 2;
+  // Placeholder trade size — overwritten after levels are computed (volatility-adjusted).
+  // Used here only for the logEntry default; actual order uses the recalculated value.
+  let tradeSize = Math.min(CONFIG.portfolioValue * 0.10, CONFIG.maxTradeSizeUSD);
 
   const direction = reference?.direction ?? null;
   const symbol    = reference?.symbol    ?? watchlist[0];
@@ -1562,11 +1602,21 @@ async function run() {
           return;
         }
 
+        // Volatility-adjusted position sizing: recalculate now that we know SL distance.
+        // This replaces the flat 10% placeholder set earlier.
+        tradeSize = volAdjustedTradeSize(
+          CONFIG.portfolioValue, slDistancePct, leverage, CONFIG.maxTradeSizeUSD
+        );
+        logEntry.tradeSize = tradeSize;
+        logEntry.riskPct   = (slDistancePct * tradeSize * leverage / CONFIG.portfolioValue * 100).toFixed(2);
+
         console.log(`\n── SL / TP Levels (ATR = $${atr.toFixed(2)}) ──────────────\n`);
         console.log(`  Entry      : $${price.toFixed(2)}`);
-        console.log(`  Stop Loss  : $${levels.stopLoss.toFixed(2)}  (1.5 × ATR below entry)`);
+        console.log(`  Stop Loss  : $${levels.stopLoss.toFixed(2)}  (SL distance ${(slDistancePct * 100).toFixed(2)}%)`);
         console.log(`  TP1        : $${levels.takeProfit1.toFixed(2)}  (2.25 × ATR — close 50%, move stop to BE)`);
         console.log(`  TP2        : $${levels.takeProfit2.toFixed(2)}  (4.5 × ATR — close remaining 50%)`);
+        console.log(`  Trade size : $${tradeSize.toFixed(2)} margin | risk 1% of portfolio ($${(CONFIG.portfolioValue * 0.01).toFixed(2)})`);
+        console.log(`  Notional   : ~$${(tradeSize * leverage).toFixed(2)} (${leverage}x leverage)`);
 
         if (CONFIG.paperTrading) {
           console.log(`\n📋 PAPER TRADE — ${chosen.style.toUpperCase()} ${direction.toUpperCase()} $${tradeSize.toFixed(2)} ${symbol} @ $${price.toFixed(2)} | ${leverage}x leverage`);
