@@ -373,7 +373,7 @@ function scoreScalp(c5m, c15m, vwap, direction) {
     check("Price above VWAP (session bias bullish)",        vwap && price > vwap);
     check("Price above 200 EMA on 15m chart",               ema200_15m && price > ema200_15m);
     check("EMA 9 ≥ EMA 21 on 5m (recent or current)",       cross === "bullish" || cross === "above");
-    check("RSI(7) below 20 on 5m (oversold)",               rsi7_5m !== null && rsi7_5m < 20);
+    check("RSI(7) below 30 on 5m (oversold)",               rsi7_5m !== null && rsi7_5m < 30);
     check("MACD(6/13/5) histogram positive on 5m",          macd_5m && macd_5m.histogram > 0);
     check("Volume ≥ 1.5x 20-period MA on 5m",               volOK);
     check("15m candle closed bullish (green)",              last15m && last15m.close > last15m.open);
@@ -384,13 +384,22 @@ function scoreScalp(c5m, c15m, vwap, direction) {
     check("Price below VWAP (session bias bearish)",        vwap && price < vwap);
     check("Price below 200 EMA on 15m chart",               ema200_15m && price < ema200_15m);
     check("EMA 9 ≤ EMA 21 on 5m (recent or current)",       cross === "bearish" || cross === "below");
-    check("RSI(7) above 80 on 5m (overbought)",             rsi7_5m !== null && rsi7_5m > 80);
+    check("RSI(7) above 70 on 5m (overbought)",             rsi7_5m !== null && rsi7_5m > 70);
     check("MACD(6/13/5) histogram negative on 5m",          macd_5m && macd_5m.histogram < 0);
     check("Volume ≥ 1.5x 20-period MA on 5m",               volOK);
     check("15m candle closed bearish (red)",                last15m && last15m.close < last15m.open);
     check("Lower high on 5m chart",                          struct5m && struct5m.lowerHigh);
     check("Price < EMA 9 on 5m (micro downtrend)",          ema9_5m && price < ema9_5m);
     check("15m RSI(14) below 50",                            rsi14_15m !== null && rsi14_15m < 50);
+  }
+
+  // Hard gate: RSI must confirm exhaustion — no scalp without it.
+  // RSI(7) extreme is the single most important timing signal for snap-back entries.
+  // Without it, the bot enters mid-trend where a normal pullback hits the stop.
+  const rsiLabel = direction === "long" ? "RSI(7) below 30 on 5m (oversold)" : "RSI(7) above 70 on 5m (overbought)";
+  const rsiPassed = conditions.find((c) => c.label === rsiLabel)?.pass;
+  if (!rsiPassed) {
+    return { score: 0, direction, conditions, atr: atr7_5m, price, style: "scalp" };
   }
 
   return {
@@ -1154,15 +1163,17 @@ async function run() {
         const levels = computeLevels(direction, price, atr, chosen.style);
         logEntry.levels = levels;
 
-        // ATR floor: reject if SL distance is less than 0.1% of price.
-        // This catches ultra-compressed volatility periods where the stop
-        // would sit inside normal single-candle noise (e.g. SOL 0.069pt stop).
+        // ATR floor: reject if SL distance is too small relative to price.
+        // Scalps require 0.25% — 5m ATR can be tiny and a single wick blows through a
+        // tighter stop. Day/swing require 0.1% as a basic sanity check.
         const slDistancePct = Math.abs(levels.stopLoss - price) / price;
-        if (slDistancePct < 0.001) {
-          console.log(`\n🛑 TRADE ABORTED — ATR too compressed (SL is only ${(slDistancePct * 100).toFixed(3)}% from entry — minimum 0.1%). Wait for higher-volatility conditions.`);
+        const atrFloor = chosen.style === "scalp" ? 0.0025 : 0.001;
+        const atrFloorPct = (atrFloor * 100).toFixed(2);
+        if (slDistancePct < atrFloor) {
+          console.log(`\n🛑 TRADE ABORTED — ATR too compressed for ${chosen.style} (SL is only ${(slDistancePct * 100).toFixed(3)}% from entry — minimum ${atrFloorPct}%). Wait for higher-volatility conditions.`);
           logEntry.allPass = false;
           logEntry.vetoed = true;
-          logEntry.vetoReason = `ATR too compressed: SL distance ${(slDistancePct * 100).toFixed(3)}% < 0.1%`;
+          logEntry.vetoReason = `ATR too compressed: SL distance ${(slDistancePct * 100).toFixed(3)}% < ${atrFloorPct}%`;
           safeWriteLog(LOG_FILE, log);
           return;
         }
