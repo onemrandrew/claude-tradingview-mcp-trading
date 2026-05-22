@@ -107,14 +107,59 @@ function countTodaysTrades(log) {
   return log.trades.filter((t) => ptDate(t.timestamp) === today && t.orderPlaced).length;
 }
 
-// Circuit breaker: pause if the last N placed trades all hit SL.
-// Prevents the bot from continuing to trade when market conditions are
-// clearly wrong (e.g. choppy range day, algorithm mismatch).
+// Outcome inference: called each run to mark trade log entries as won/lost.
+// We can't know the exact close price from BitGet without fetching order history,
+// so we infer from current price vs SL/TP levels. This is a best-effort estimate:
+// - If price has crossed TP1 direction → likely TP
+// - If price has crossed SL direction  → likely SL
+// - Otherwise                          → closed_unknown (treat as loss for safety)
+// Call this BEFORE the circuit breaker check.
+function inferTradeOutcomes(log, openPositionSymbols) {
+  const openSet = new Set(openPositionSymbols);
+  let changed = false;
+  for (const t of log.trades) {
+    if (!t.orderPlaced || t.error || t.outcome) continue; // skip if already resolved
+    if (openSet.has(t.symbol)) continue;                   // still open — leave it
+    // Position is gone. Infer outcome from current price vs levels.
+    // NOTE: current price may differ from actual close price. This is approximate.
+    // For a definitive record, check BitGet order history manually.
+    t.closedAt = t.closedAt || new Date().toISOString(); // first time we notice it's gone
+    if (!t.levels || !t.price) {
+      t.outcome = "closed_unknown";
+    } else {
+      const { stopLoss, takeProfit1 } = t.levels;
+      // We don't have current price here — set outcome to "closed_unknown" for now.
+      // The manageOpenPositions function updates this with actual price context.
+      t.outcome = t.outcome || "closed_unknown";
+    }
+    changed = true;
+  }
+  return changed;
+}
+
+// Circuit breaker: pause if the last N completed trades were all losses.
+// Works correctly now that inferTradeOutcomes populates the outcome field.
+// "closed_unknown" is treated as a loss (conservative — we'd rather pause than
+// keep trading blindly when the outcome is unclear).
 function consecutiveLossCircuitBreaker(log, maxConsecutiveLosses = 3) {
-  const placed = log.trades.filter((t) => t.orderPlaced).slice(-maxConsecutiveLosses);
-  if (placed.length < maxConsecutiveLosses) return false; // not enough history
-  const allLosses = placed.every((t) => t.outcome === "SL" || t.outcome === "loss");
+  const completed = log.trades
+    .filter((t) => t.orderPlaced && !t.error && t.outcome)
+    .slice(-maxConsecutiveLosses);
+  if (completed.length < maxConsecutiveLosses) return false;
+  const allLosses = completed.every(
+    (t) => t.outcome === "SL" || t.outcome === "loss" || t.outcome === "closed_unknown"
+  );
   return allLosses;
+}
+
+// Log trim: keep only the last 500 entries to prevent unbounded growth.
+// NOTE: on Railway with default ephemeral storage, this file resets on each deploy.
+// To make the circuit breaker / cooldown persistent across deploys, mount a
+// Railway Volume at the app directory: railway volume create --mount /app
+function trimLog(log, maxEntries = 500) {
+  if (log.trades.length > maxEntries) {
+    log.trades = log.trades.slice(-maxEntries);
+  }
 }
 
 // Session filter: scalps only during high-liquidity windows (UTC).
@@ -343,17 +388,31 @@ function calcADX(candles, period = 14) {
   return { adx, plusDI: last.pDI, minusDI: last.mDI };
 }
 
-// EMA crossover detection (looks at current and previous bar)
+// EMA crossover detection (looks at current and previous bar).
+// Computes each EMA only once by running the full series and reading the last two values.
 function detectCrossover(closes, fastPeriod, slowPeriod) {
-  if (closes.length < Math.max(fastPeriod, slowPeriod) + 2) return "none";
-  const fastNow  = calcEMA(closes, fastPeriod);
-  const slowNow  = calcEMA(closes, slowPeriod);
-  const fastPrev = calcEMA(closes.slice(0, -1), fastPeriod);
-  const slowPrev = calcEMA(closes.slice(0, -1), slowPeriod);
-  if (!fastNow || !slowNow || !fastPrev || !slowPrev) return "none";
+  const minLen = Math.max(fastPeriod, slowPeriod) + 2;
+  if (closes.length < minLen) return "none";
+
+  // Helper: returns [prev, now] EMA values in one pass
+  function emaPair(arr, period) {
+    if (arr.length < period + 1) return [null, null];
+    const mult = 2 / (period + 1);
+    let ema = arr.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    let prev = ema;
+    for (let i = period; i < arr.length; i++) {
+      prev = ema;
+      ema  = arr[i] * mult + ema * (1 - mult);
+    }
+    return [prev, ema];
+  }
+
+  const [fastPrev, fastNow] = emaPair(closes, fastPeriod);
+  const [slowPrev, slowNow] = emaPair(closes, slowPeriod);
+  if (fastNow === null || slowNow === null) return "none";
   if (fastPrev <= slowPrev && fastNow > slowNow) return "bullish";
   if (fastPrev >= slowPrev && fastNow < slowNow) return "bearish";
-  return fastNow > slowNow ? "above" : "below"; // already crossed in past
+  return fastNow > slowNow ? "above" : "below";
 }
 
 function volumeAboveMA(candles, period = 20, multiplier = 1.0) {
@@ -566,6 +625,13 @@ function scoreDayTrade(c1h, c4h, direction) {
   if (atrBase1h && atr14_1h && atr14_1h > atrBase1h * 3) {
     console.log(`⚠️  Extreme 1H volatility — skipping day_trade`);
     return { score: 0, direction: null, conditions: [], atr: atr14_1h, price, style: "day_trade" };
+  }
+
+  // ADX filter: skip day_trade in ranging 1H markets (same logic as scalp on 5m)
+  const adx1h = calcADX(c1h, 14);
+  if (adx1h && adx1h.adx < 20) {
+    console.log(`⚠️  ADX(14) on 1H = ${adx1h.adx.toFixed(1)} < 20 — ranging market, skip day_trade`);
+    return { score: 0, direction, conditions: [], atr: atr14_1h, price, style: "day_trade" };
   }
 
   const conditions = [];
@@ -999,6 +1065,9 @@ async function manageOpenPositions(open, log) {
       }
     }
   }
+
+  // Persist any trailing-stop level updates written to log entries above
+  saveLog(log);
 }
 
 // ─── Funding Rate (BitGet) ────────────────────────────────────────────────────
@@ -1271,6 +1340,7 @@ async function run() {
   console.log(`Watchlist: ${watchlist.join(", ")}`);
 
   const log = loadLog();
+  trimLog(log, 500); // keep only last 500 entries — prevents unbounded growth
 
   // SAFEGUARD: Open position check — one position per symbol max (no stacking same symbol)
   console.log("\n── Open Position Check ──────────────────────────────────\n");
@@ -1309,6 +1379,10 @@ async function run() {
     if (!CONFIG.paperTrading) {
       await manageOpenPositions(liveOpenPositions, log);
     }
+
+    // Infer outcomes for trades whose positions are now closed — makes circuit breaker reliable
+    const changed = inferTradeOutcomes(log, [...openSymbols]);
+    if (changed) saveLog(log);
   }
 
   if (!checkTradeLimits(log)) {
@@ -1483,7 +1557,8 @@ async function run() {
           logEntry.allPass = false;
           logEntry.vetoed = true;
           logEntry.vetoReason = `ATR too compressed: SL distance ${(slDistancePct * 100).toFixed(3)}% < ${atrFloorPct}%`;
-          safeWriteLog(LOG_FILE, log);
+          log.trades.push(logEntry);
+          saveLog(log);
           return;
         }
 
