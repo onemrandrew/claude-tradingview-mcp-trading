@@ -127,6 +127,65 @@ function isHighLiquiditySession() {
   return utcHour >= 7 && utcHour <= 21;
 }
 
+// ─── News Blackout Filter ─────────────────────────────────────────────────────
+// High-impact macro events (FOMC, CPI) cause random volatility spikes that blow
+// stops regardless of setup quality. Block all trading 1 hour before through
+// 2 hours after each event.
+//
+// All times are UTC. FOMC decision: ~19:00 UTC. US CPI: ~13:30 UTC.
+// Update these dates each January when the Fed publishes the new FOMC schedule.
+const NEWS_EVENTS_2026 = [
+  // FOMC interest rate decisions — 14:00 ET = 19:00 UTC
+  { date: "2026-01-28", utcHour: 19, label: "FOMC Decision" },
+  { date: "2026-03-18", utcHour: 19, label: "FOMC Decision" },
+  { date: "2026-04-29", utcHour: 19, label: "FOMC Decision" },
+  { date: "2026-06-10", utcHour: 19, label: "FOMC Decision" },
+  { date: "2026-07-29", utcHour: 19, label: "FOMC Decision" },
+  { date: "2026-09-16", utcHour: 19, label: "FOMC Decision" },
+  { date: "2026-10-28", utcHour: 19, label: "FOMC Decision" },
+  { date: "2026-12-09", utcHour: 19, label: "FOMC Decision" },
+  // US CPI releases — 8:30 AM ET = 13:30 UTC
+  { date: "2026-01-14", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-02-11", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-03-11", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-04-15", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-05-13", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-06-11", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-07-14", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-08-12", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-09-10", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-10-14", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-11-12", utcHour: 13, label: "US CPI Release" },
+  { date: "2026-12-09", utcHour: 13, label: "US CPI Release" },
+];
+
+function getNewsBlackout() {
+  const now = new Date();
+  const utcDate = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  const utcHour = now.getUTCHours();
+  for (const ev of NEWS_EVENTS_2026) {
+    if (ev.date !== utcDate) continue;
+    const start = ev.utcHour - 1; // 1 hour before
+    const end   = ev.utcHour + 2; // 2 hours after
+    if (utcHour >= start && utcHour <= end) {
+      return { blocked: true, label: ev.label, window: `${ev.date} UTC ${start}:00–${end}:00` };
+    }
+  }
+  return { blocked: false };
+}
+
+// ─── Post-SL Cooldown ─────────────────────────────────────────────────────────
+// After any placed trade on a symbol, don't re-enter for 2 hours.
+// Prevents revenge trading immediately after an SL hit.
+function getRecentTradeForSymbol(log, symbol, cooldownHours = 2) {
+  const cutoff = Date.now() - cooldownHours * 60 * 60 * 1000;
+  const recent = log.trades.filter(
+    (t) => t.symbol === symbol && t.orderPlaced && !t.error &&
+           new Date(t.timestamp).getTime() >= cutoff
+  );
+  return recent.length > 0 ? recent[recent.length - 1] : null;
+}
+
 // ─── Market Data (BitGet public API) ─────────────────────────────────────────
 
 async function fetchCandles(symbol, interval, limit = 100) {
@@ -818,6 +877,130 @@ async function getOpenPositions() {
   }
 }
 
+// ─── Close Position at Market ─────────────────────────────────────────────────
+// Used by the scalp time-exit: close the entire remaining position at market.
+async function closePositionAtMarket(symbol, holdSide, size) {
+  const SIZE_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
+  const SIZE_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1  };
+  const inc = SIZE_MULTIPLIER[symbol] ?? 0.0001;
+  const dec = SIZE_DECIMALS[symbol]   ?? 4;
+  const sizeStr = (Math.floor(size / inc) * inc).toFixed(dec);
+  const timestamp = Date.now().toString();
+  const path = "/api/v2/mix/order/place-order";
+  const body = JSON.stringify({
+    symbol,
+    productType: "usdt-futures",
+    marginMode:  "isolated",
+    marginCoin:  "USDT",
+    size:        sizeStr,
+    side:        holdSide === "long" ? "sell" : "buy",
+    tradeSide:   "close",
+    orderType:   "market",
+  });
+  const sig = signBitGet(timestamp, "POST", path, body);
+  const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type":      "application/json",
+      "ACCESS-KEY":        CONFIG.bitget.apiKey,
+      "ACCESS-SIGN":       sig,
+      "ACCESS-TIMESTAMP":  timestamp,
+      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+    },
+    body,
+  });
+  const data = await res.json();
+  if (data.code !== "00000") throw new Error(`Market close failed: ${data.msg}`);
+  return data.data;
+}
+
+// ─── Position Management ──────────────────────────────────────────────────────
+// Runs every hour before scanning for new trades.
+// 1. Trailing stop — once TP1 is hit (position halved), ratchet the SL to trail
+//    behind current price. At minimum, moves stop to breakeven.
+// 2. Scalp time exit — if a scalp has been open > 2 hours without hitting TP1,
+//    close at market. Scalps that stall are usually wrong; holding them overnight
+//    turns a scalp loss into a much larger loss.
+async function manageOpenPositions(open, log) {
+  if (open.length === 0) return;
+  console.log("\n── Position Management ──────────────────────────────────\n");
+
+  for (const pos of open) {
+    const symbol      = pos.symbol;
+    const holdSide    = pos.holdSide;          // "long" or "short" from BitGet
+    const currentSize = parseFloat(pos.total);
+    const markPrice   = parseFloat(pos.markPrice || pos.averageOpenPrice);
+
+    // Find the most recent placed trade for this symbol in the log
+    const tradeEntry = log.trades
+      .filter((t) => t.symbol === symbol && t.orderPlaced && !t.error && t.levels?.atr)
+      .slice(-1)[0];
+
+    if (!tradeEntry) {
+      console.log(`⚠️  ${symbol}: No log entry with ATR — skipping position management`);
+      continue;
+    }
+
+    const { style, direction, price: entryPrice, leverage, tradeSize } = tradeEntry;
+    const atr      = tradeEntry.levels.atr;
+    const ageHours = (Date.now() - new Date(tradeEntry.timestamp).getTime()) / 3_600_000;
+
+    // Estimate original full size to detect TP1 hit
+    const INC  = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
+    const inc  = INC[symbol] ?? 0.0001;
+    const originalSize = Math.floor((tradeSize * leverage) / entryPrice / inc) * inc;
+    const tp1WasHit    = currentSize < originalSize * 0.6; // < 60% → TP1 filled
+
+    console.log(`📊 ${symbol} ${direction?.toUpperCase()} | age ${ageHours.toFixed(1)}h | TP1 hit: ${tp1WasHit} | size ${currentSize.toFixed(4)}/${originalSize.toFixed(4)}`);
+
+    // ── Scalp Time Exit ────────────────────────────────────────────────────────
+    // Scalps that haven't moved to TP1 in 2 hours are stalled. Cut them.
+    if (style === "scalp" && ageHours > 2 && !tp1WasHit) {
+      console.log(`⏱️  ${symbol}: Scalp stalled ${ageHours.toFixed(1)}h — closing at market`);
+      try {
+        await closePositionAtMarket(symbol, holdSide, currentSize);
+        console.log(`✅ ${symbol}: Scalp closed at market (2h time exit) @ ~$${markPrice.toFixed(2)}`);
+      } catch (err) {
+        console.log(`⚠️  ${symbol}: Time exit failed — ${err.message}. Close manually.`);
+      }
+      continue; // skip trailing stop — position is now closed
+    }
+
+    // ── Trailing Stop ──────────────────────────────────────────────────────────
+    // Once TP1 is hit, ratchet the SL to (current price ∓ 1.5×ATR), floored at
+    // entry price (breakeven). Only update if the new level is an improvement.
+    if (tp1WasHit && atr) {
+      const PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3 };
+      const priceDp  = PRICE_DP[symbol] ?? 2;
+
+      let newStop;
+      if (direction === "long") {
+        newStop = Math.max(entryPrice, markPrice - 1.5 * atr);
+      } else {
+        newStop = Math.min(entryPrice, markPrice + 1.5 * atr);
+      }
+
+      const oldStop   = tradeEntry.levels.stopLoss;
+      const improved  = direction === "long"
+        ? newStop > oldStop + 0.001 * entryPrice   // at least 0.1% improvement
+        : newStop < oldStop - 0.001 * entryPrice;
+
+      if (improved) {
+        console.log(`🔄 ${symbol}: Trailing SL ${oldStop.toFixed(priceDp)} → ${newStop.toFixed(priceDp)}`);
+        try {
+          await placeTpslOrder(symbol, holdSide, "pos_loss", newStop, undefined);
+          tradeEntry.levels.stopLoss = newStop; // update log so next run sees new level
+          console.log(`✅ ${symbol}: Trailing stop updated to $${newStop.toFixed(priceDp)}`);
+        } catch (err) {
+          console.log(`⚠️  ${symbol}: Trailing stop update failed — ${err.message}`);
+        }
+      } else {
+        console.log(`✅ ${symbol}: Trailing stop already optimal — no update needed`);
+      }
+    }
+  }
+}
+
 // ─── Funding Rate (BitGet) ────────────────────────────────────────────────────
 // Returns the current 8-hour funding rate as a decimal.
 // > 0  = longs pay shorts. < 0 = shorts pay longs.
@@ -1091,30 +1274,40 @@ async function run() {
 
   // SAFEGUARD: Open position check — one position per symbol max (no stacking same symbol)
   console.log("\n── Open Position Check ──────────────────────────────────\n");
-  const openSymbols = new Set();
+  const openSymbols    = new Set();
+  const openDirections = new Map(); // symbol → "long"|"short" (for correlation guard)
+  let liveOpenPositions = [];       // full position objects for manageOpenPositions
+
   if (CONFIG.paperTrading) {
     const paperPos = await getPaperPosition();
     if (paperPos) {
       console.log(`🔵 Open paper position on ${paperPos.symbol} — will skip that symbol this run.`);
       openSymbols.add(paperPos.symbol);
+      if (paperPos.direction) openDirections.set(paperPos.symbol, paperPos.direction);
     } else {
       console.log("✅ No open paper position — clear to scan all symbols");
     }
   } else {
-    let open;
     try {
-      open = await getOpenPositions();
+      liveOpenPositions = await getOpenPositions();
     } catch (err) {
       console.log(`🛑 Cannot verify open positions: ${err.message} — aborting run to prevent stacking.`);
       return;
     }
-    if (open.length > 0) {
-      open.forEach((p) => {
+    if (liveOpenPositions.length > 0) {
+      liveOpenPositions.forEach((p) => {
         openSymbols.add(p.symbol);
-        console.log(`🔵 Open position: ${p.symbol} (size ${p.total}) — skipping this symbol`);
+        openDirections.set(p.symbol, p.holdSide); // "long" or "short" from BitGet
+        console.log(`🔵 Open position: ${p.symbol} ${p.holdSide?.toUpperCase()} (size ${p.total})`);
       });
     } else {
       console.log("✅ No open positions — clear to scan all symbols");
+    }
+
+    // Position management: trailing stops + scalp time exits
+    // Run this before scanning so stalled scalps are closed before new ones are considered
+    if (!CONFIG.paperTrading) {
+      await manageOpenPositions(liveOpenPositions, log);
     }
   }
 
@@ -1124,11 +1317,18 @@ async function run() {
   }
 
   // Circuit breaker: pause if last 3 placed trades were all SL hits.
-  // If the bot has taken 3 consecutive losses, market conditions are likely
-  // adverse — stop trading until conditions reset (next day or manual override).
   if (consecutiveLossCircuitBreaker(log, 3)) {
     console.log("\n🛑 CIRCUIT BREAKER — Last 3 trades all hit SL. Pausing until conditions improve.");
     console.log("   Check the log, assess market conditions, and ensure the strategy still fits.");
+    return;
+  }
+
+  // News blackout: block all trading around FOMC and CPI releases.
+  // These events cause random volatility spikes that stop out valid setups.
+  const newsBlackout = getNewsBlackout();
+  if (newsBlackout.blocked) {
+    console.log(`\n📰 NEWS BLACKOUT — ${newsBlackout.label} (${newsBlackout.window})`);
+    console.log("   All trading paused. Bot will resume after the blackout window.");
     return;
   }
 
@@ -1154,11 +1354,37 @@ async function run() {
   }
 
   // Filter to qualifying setups.
-  // Scalps require 90+ — tight stops on 5m charts are too vulnerable to noise
-  // at minimum confidence. Day trade and swing require the global threshold.
-  const qualifying = allSetups.filter((s) => {
+  // Scalps require 90+ — tight stops on 5m charts are too vulnerable to noise.
+  let qualifying = allSetups.filter((s) => {
     const min = s.style === "scalp" ? 90 : CONFIDENCE_THRESHOLD;
     return s.score >= min;
+  });
+
+  // Post-SL cooldown: skip symbols where a trade was placed in the last 2 hours.
+  // The per-symbol position guard handles open trades; this catches the case where
+  // an SL or TP fired and the position closed — we don't want immediate re-entry.
+  qualifying = qualifying.filter((s) => {
+    const recent = getRecentTradeForSymbol(log, s.symbol, 2);
+    if (recent) {
+      const ageMin = ((Date.now() - new Date(recent.timestamp).getTime()) / 60_000).toFixed(0);
+      console.log(`⏸️  Cooldown: ${s.symbol} — last trade ${ageMin}m ago (2h cooldown active)`);
+      return false;
+    }
+    return true;
+  });
+
+  // Correlation guard: BTC, ETH, SOL are all highly correlated.
+  // If we already hold a position in direction X, don't open another in direction X.
+  // Holding ETH short + BTC short is not diversification — it's double exposure.
+  const existingDirections = new Set(openDirections.values());
+  qualifying = qualifying.filter((s) => {
+    if (existingDirections.has(s.direction)) {
+      const existingSymbol = [...openDirections.entries()]
+        .find(([, dir]) => dir === s.direction)?.[0] ?? "another symbol";
+      console.log(`🔗 Correlation guard: ${s.symbol} ${s.direction} blocked — already ${s.direction} on ${existingSymbol}`);
+      return false;
+    }
+    return true;
   });
 
   // Tiebreaker: if within 5 pts, prefer higher timeframe (swing > day_trade > scalp)
