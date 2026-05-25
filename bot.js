@@ -1670,14 +1670,11 @@ async function run() {
   // To re-enable scalp: change railway.json cronSchedule to "*/5 * * * *" (every 5 min).
   // Backtest-derived thresholds:
   //   Shorts need more conviction — positive edge but materially weaker than longs.
-  //   ETH is the weakest performer — hold it to a stricter standard.
   const SHORT_THRESHOLD = CONFIDENCE_THRESHOLD + 5; // 90 at default 85 base
-  const ETH_THRESHOLD   = CONFIDENCE_THRESHOLD + 5; // 90 at default 85 base
 
   let qualifying = allSetups.filter((s) => {
     if (s.style === "scalp") return false; // disabled — hourly cron, stale 5m signals
     if (s.direction === "short" && s.score < SHORT_THRESHOLD) return false;
-    if (s.symbol === "ETHUSDT"  && s.score < ETH_THRESHOLD)   return false;
     return s.score >= CONFIDENCE_THRESHOLD;
   });
 

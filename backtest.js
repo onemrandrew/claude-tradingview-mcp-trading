@@ -30,7 +30,9 @@ const BASE_URL = "https://api.bitget.com";
 // Parse CLI flags
 const args  = process.argv.slice(2);
 const flag  = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-if (flag("--symbol"))    SYMBOLS   = [flag("--symbol")];
+// Collect all --symbol occurrences (e.g. --symbol BTCUSDT --symbol SOLUSDT)
+const symbolFlags = args.reduce((acc, v, i) => (v === "--symbol" && args[i+1] ? [...acc, args[i+1]] : acc), []);
+if (symbolFlags.length > 0) SYMBOLS = symbolFlags;
 if (flag("--style"))     STYLES    = [flag("--style")];
 if (flag("--threshold")) THRESHOLD = parseInt(flag("--threshold"), 10);
 
