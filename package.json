@@ -9,6 +9,7 @@
     "dev": "node bot.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
     "dotenv": "^16.4.5",
     "node-fetch": "^3.3.2"
   },
