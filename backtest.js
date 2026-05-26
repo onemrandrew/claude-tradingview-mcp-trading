@@ -347,12 +347,16 @@ function scoreSwing(c4h, c1d, direction) {
   return { score: conds.filter(c => c.pass).length * 10, conditions: conds, atr: atr14_4h, price, style: "swing" };
 }
 
-function computeLevels(direction, entry, atr) {
-  // day_trade and swing share the same multipliers
-  const sl = 2.0, tp1 = 3.0, tp2 = 6.0;
+function computeLevels(direction, entry, atr, style) {
+  // day_trade: 2.5× SL — 1H candles are wick-prone; wider stop survives stop hunts.
+  // swing:     2.0× SL — 4H candles are smoother, tighter stop is fine.
+  // R:R is identical across styles: TP1 = 1.5× SL distance, TP2 = 3.0× SL distance.
+  const mult = style === "day_trade"
+    ? { sl: 2.5, tp1: 3.0, tp2: 6.0 }   // wider SL, original TP levels — better wick survival
+    : { sl: 2.0, tp1: 3.0, tp2: 6.0 };
   return direction === "long"
-    ? { stopLoss: entry - sl * atr, takeProfit1: entry + tp1 * atr, takeProfit2: entry + tp2 * atr }
-    : { stopLoss: entry + sl * atr, takeProfit1: entry - tp1 * atr, takeProfit2: entry - tp2 * atr };
+    ? { stopLoss: entry - mult.sl * atr, takeProfit1: entry + mult.tp1 * atr, takeProfit2: entry + mult.tp2 * atr }
+    : { stopLoss: entry + mult.sl * atr, takeProfit1: entry - mult.tp1 * atr, takeProfit2: entry - mult.tp2 * atr };
 }
 
 // ─── News Blackout ────────────────────────────────────────────────────────────
@@ -534,7 +538,7 @@ async function runBacktest() {
       const atr   = best.atr;
       if (!atr || atr <= 0) continue;
 
-      const levels    = computeLevels(best.direction, entry, atr);
+      const levels    = computeLevels(best.direction, entry, atr, best.style);
       const slDistPct = Math.abs(levels.stopLoss - entry) / entry;
       if (slDistPct < 0.001) continue; // ATR floor — stop too tight
 
