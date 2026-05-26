@@ -1059,13 +1059,11 @@ async function placePlanOrder(symbol, holdSide, triggerPrice, size) {
   const body = JSON.stringify({
     symbol,
     productType:  "usdt-futures",
-    marginMode:   "isolated",
     marginCoin:   "USDT",
     size:         size.toFixed(sizeDp),
     side,
     tradeSide:    "close",
-    orderType:    "limit",
-    price:        triggerPrice.toFixed(priceDp),    // limit price = trigger price
+    orderType:    "market",               // market fill on trigger — guaranteed execution
     triggerPrice: triggerPrice.toFixed(priceDp),
     triggerType:  "mark_price",
     planType:     "profit_plan",
@@ -1859,8 +1857,10 @@ async function run() {
             logEntry.orderId = order.orderId;
             console.log(`✅ ENTRY ORDER PLACED — ${order.orderId}`);
 
-            // Wait 1s for BitGet to register the position before placing TP/SL
-            await new Promise((r) => setTimeout(r, 1000));
+            // Wait 3s for BitGet to register the position before placing TP/SL.
+            // Plan orders are tied to the position — if placed too quickly BitGet
+            // returns "position does not exist" and the order is silently dropped.
+            await new Promise((r) => setTimeout(r, 3000));
 
             // Place TP/SL orders after entry
             if (CONFIG.tradeMode === "futures") {
@@ -1884,31 +1884,39 @@ async function run() {
                 logEntry.slError = err.message;
               }
 
+              // Helper: place a plan order with one automatic retry after 2s.
+              // Transient BitGet errors (position not yet settled, rate limit) are
+              // common in the first few seconds after entry — one retry catches most.
+              const placePlanWithRetry = async (label, tpPrice, tpSize) => {
+                try {
+                  await placePlanOrder(symbol, holdSide, tpPrice, tpSize);
+                  console.log(`✅ ${label} SET — ${tpSize.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${tpPrice.toFixed(priceDp)}`);
+                } catch (firstErr) {
+                  console.log(`⚠️  ${label} first attempt failed: ${firstErr.message} — retrying in 2s`);
+                  await new Promise((r) => setTimeout(r, 2000));
+                  try {
+                    await placePlanOrder(symbol, holdSide, tpPrice, tpSize);
+                    console.log(`✅ ${label} SET (retry) — ${tpSize.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${tpPrice.toFixed(priceDp)}`);
+                  } catch (retryErr) {
+                    console.log(`❌ ${label} FAILED after retry: ${retryErr.message} — CLOSE MANUALLY`);
+                    logEntry[`${label.toLowerCase().replace(" ","")}Error`] = retryErr.message;
+                  }
+                }
+              };
+
               // TP1 — profit_plan order, closes exactly 50% of position.
               // Uses place-plan-order (not place-tpsl-order) so it can coexist with TP2.
               // Multiple profit_plan orders can be active simultaneously; pos_profit cannot.
-              try {
-                if (halfSize >= tpInc) {
-                  await placePlanOrder(symbol, holdSide, levels.takeProfit1, halfSize);
-                  console.log(`✅ TP1 SET — ${halfSize.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit1.toFixed(priceDp)} (50% partial close, in Plan Orders)`);
-                } else {
-                  console.log(`⚠️  TP1 skipped — position too small to split (${fullSize.toFixed(tpDec)} < 2 × ${tpInc})`);
-                }
-              } catch (err) {
-                console.log(`⚠️  TP1 order failed: ${err.message}`);
-                logEntry.tp1Error = err.message;
+              if (halfSize >= tpInc) {
+                await placePlanWithRetry("TP1", levels.takeProfit1, halfSize);
+              } else {
+                console.log(`⚠️  TP1 skipped — position too small to split (${fullSize.toFixed(tpDec)} < 2 × ${tpInc})`);
               }
 
               // TP2 — profit_plan order, closes the remaining 50%.
               // If TP1 was skipped (too small), TP2 closes the full position instead.
-              try {
-                const tp2Size = halfSize >= tpInc ? halfSize : fullSize;
-                await placePlanOrder(symbol, holdSide, levels.takeProfit2, tp2Size);
-                console.log(`✅ TP2 SET — ${tp2Size.toFixed(tpDec)} ${symbol.replace("USDT","")} @ $${levels.takeProfit2.toFixed(priceDp)} (remaining close, in Plan Orders)`);
-              } catch (err) {
-                console.log(`⚠️  TP2 order failed: ${err.message} — monitor manually`);
-                logEntry.tp2Error = err.message;
-              }
+              const tp2Size = halfSize >= tpInc ? halfSize : fullSize;
+              await placePlanWithRetry("TP2", levels.takeProfit2, tp2Size);
             }
           } catch (err) {
             console.log(`❌ ORDER FAILED — ${err.message}`);
