@@ -1062,6 +1062,7 @@ async function placePlanOrder(symbol, holdSide, triggerPrice, size) {
     marginCoin:   "USDT",
     size:         size.toFixed(sizeDp),
     side,
+    holdSide,                             // required — tells BitGet which position to close
     tradeSide:    "close",
     orderType:    "market",               // market fill on trigger — guaranteed execution
     triggerPrice: triggerPrice.toFixed(priceDp),
@@ -1679,7 +1680,8 @@ async function run() {
   const SHORT_THRESHOLD = CONFIDENCE_THRESHOLD + 5; // 90 at default 85 base
 
   let qualifying = allSetups.filter((s) => {
-    if (s.style === "scalp") return false; // disabled — hourly cron, stale 5m signals
+    if (s.style === "scalp") return false;  // disabled — hourly cron, stale 5m signals
+    if (s.symbol === "ETHUSDT") return false; // permanently removed — poor backtest performance
     if (s.direction === "short" && s.score < SHORT_THRESHOLD) return false;
     return s.score >= CONFIDENCE_THRESHOLD;
   });
@@ -1746,7 +1748,9 @@ async function run() {
   const leverage  = chosen ? leverageForStyle(chosen.style, chosen.score) : 2;
   // Placeholder trade size — overwritten after levels are computed (volatility-adjusted).
   // Used here only for the logEntry default; actual order uses the recalculated value.
-  let tradeSize = Math.min(CONFIG.portfolioValue * 0.10, CONFIG.maxTradeSizeUSD);
+  // Placeholder — replaced after SL distance is known (volatility-adjusted sizing).
+  // Show maxTradeSizeUSD so blocked/vetoed log entries reflect the configured cap.
+  let tradeSize = CONFIG.maxTradeSizeUSD;
 
   const direction = reference?.direction ?? null;
   const symbol    = reference?.symbol    ?? watchlist[0];
