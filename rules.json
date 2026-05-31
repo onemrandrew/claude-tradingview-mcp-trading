@@ -1,5 +1,5 @@
 {
-  "watchlist": ["BTCUSDT", "SOLUSDT"],
+  "watchlist": ["BTCUSDT", "SOLUSDT", "HYPEUSDT"],
   "default_timeframe": "4H",
 
   "strategy": {

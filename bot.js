@@ -938,8 +938,8 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
   if (CONFIG.tradeMode === "futures") {
     // BitGet USDT-M: `size` is in BASE COIN (BTC/ETH/SOL), not lots.
     // sizeMultiplier is the minimum increment from the BitGet contract spec.
-    const SIZE_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
-    const SIZE_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1  };
+    const SIZE_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1, HYPEUSDT: 0.01 };
+    const SIZE_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1,  HYPEUSDT: 2 };
     const increment = SIZE_MULTIPLIER[symbol] ?? 0.0001;
     const decimals  = SIZE_DECIMALS[symbol]   ?? 4;
     const rawAmount = (sizeUSD * leverage) / price;           // base coin desired
@@ -1015,7 +1015,7 @@ async function placeBitGetOrder(symbol, side, sizeUSD, price, leverage = 1) {
 async function placeTpslOrder(symbol, holdSide, planType, triggerPrice, size) {
   const timestamp = Date.now().toString();
   const path = "/api/v2/mix/order/place-tpsl-order";
-  const TPSL_PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3 };
+  const TPSL_PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3, HYPEUSDT: 3 };
   const tpslPriceDp = TPSL_PRICE_DP[symbol] ?? 2;
   const body = JSON.stringify({
     symbol,
@@ -1051,7 +1051,7 @@ async function placeTpslOrder(symbol, holdSide, planType, triggerPrice, size) {
 async function placePlanOrder(symbol, holdSide, triggerPrice, size) {
   const timestamp = Date.now().toString();
   const path = "/api/v2/mix/order/place-plan-order";
-  const PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3 };
+  const PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3, HYPEUSDT: 3 };
   const SIZE_DP  = { BTCUSDT: 4, ETHUSDT: 2, SOLUSDT: 1 };
   const priceDp  = PRICE_DP[symbol] ?? 2;
   const sizeDp   = SIZE_DP[symbol]  ?? 4;
@@ -1152,8 +1152,8 @@ async function getOpenPositions() {
 // ─── Close Position at Market ─────────────────────────────────────────────────
 // Used by the scalp time-exit: close the entire remaining position at market.
 async function closePositionAtMarket(symbol, holdSide, size) {
-  const SIZE_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
-  const SIZE_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1  };
+  const SIZE_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1, HYPEUSDT: 0.01 };
+  const SIZE_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1,  HYPEUSDT: 2 };
   const inc = SIZE_MULTIPLIER[symbol] ?? 0.0001;
   const dec = SIZE_DECIMALS[symbol]   ?? 4;
   const sizeStr = (Math.floor(size / inc) * inc).toFixed(dec);
@@ -1218,7 +1218,7 @@ async function manageOpenPositions(open, log) {
     const ageHours = (Date.now() - new Date(tradeEntry.timestamp).getTime()) / 3_600_000;
 
     // Estimate original full size to detect TP1 hit
-    const INC  = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
+    const INC  = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1, HYPEUSDT: 0.01 };
     const inc  = INC[symbol] ?? 0.0001;
     const originalSize = Math.floor((tradeSize * leverage) / entryPrice / inc) * inc;
     const tp1WasHit    = currentSize < originalSize * 0.6; // < 60% → TP1 filled
@@ -1242,7 +1242,7 @@ async function manageOpenPositions(open, log) {
     // Once TP1 is hit, ratchet the SL to (current price ∓ 1.5×ATR), floored at
     // entry price (breakeven). Only update if the new level is an improvement.
     if (tp1WasHit && atr) {
-      const PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3 };
+      const PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3, HYPEUSDT: 3 };
       const priceDp  = PRICE_DP[symbol] ?? 2;
 
       let newStop;
@@ -1878,8 +1878,8 @@ async function run() {
             if (CONFIG.tradeMode === "futures") {
               const holdSide = direction === "long" ? "long" : "short";
               // Shared size helpers for TP1 and TP2
-              const TP_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1 };
-              const TP_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1  };
+              const TP_MULTIPLIER = { BTCUSDT: 0.0001, ETHUSDT: 0.01, SOLUSDT: 0.1, HYPEUSDT: 0.01 };
+              const TP_DECIMALS   = { BTCUSDT: 4,      ETHUSDT: 2,    SOLUSDT: 1,  HYPEUSDT: 2 };
               const PRICE_DP      = { BTCUSDT: 1,      ETHUSDT: 2,    SOLUSDT: 3  };
               const tpInc   = TP_MULTIPLIER[symbol] ?? 0.0001;
               const tpDec   = TP_DECIMALS[symbol]   ?? 4;
