@@ -1,0 +1,7 @@
+{
+  "deploy": {
+    "startCommand": "node ce-bot.js",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}
