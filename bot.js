@@ -1582,7 +1582,7 @@ async function run() {
   // SAFEGUARD: Open position check — one position per symbol max (no stacking same symbol)
   console.log("\n── Open Position Check ──────────────────────────────────\n");
   const openSymbols    = new Set();
-  const openDirections = new Map(); // symbol → "long"|"short" (for correlation guard)
+  const openDirections = new Map(); // symbol → "long"|"short" (tracked for logging)
   let liveOpenPositions = [];       // full position objects for manageOpenPositions
 
   if (CONFIG.paperTrading) {
@@ -1699,19 +1699,9 @@ async function run() {
     return true;
   });
 
-  // Correlation guard: BTC, ETH, SOL are all highly correlated.
-  // If we already hold a position in direction X, don't open another in direction X.
-  // Holding ETH short + BTC short is not diversification — it's double exposure.
-  const existingDirections = new Set(openDirections.values());
-  qualifying = qualifying.filter((s) => {
-    if (existingDirections.has(s.direction)) {
-      const existingSymbol = [...openDirections.entries()]
-        .find(([, dir]) => dir === s.direction)?.[0] ?? "another symbol";
-      console.log(`🔗 Correlation guard: ${s.symbol} ${s.direction} blocked — already ${s.direction} on ${existingSymbol}`);
-      return false;
-    }
-    return true;
-  });
+  // Correlation guard removed — each symbol trades independently.
+  // BTC, SOL, and HYPE can each hold their own position simultaneously.
+  // Capital exposure is managed by the 1% risk rule and MAX_TRADE_SIZE_USD cap.
 
   // Tiebreaker: if within 10 pts, prefer higher timeframe (swing > day_trade > scalp).
   // Backtest shows swing expectancy (+0.429R) is nearly 2× day_trade (+0.220R), so
