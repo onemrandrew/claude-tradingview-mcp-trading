@@ -1047,7 +1047,7 @@ async function placePlanOrder(symbol, holdSide, triggerPrice, size) {
   const timestamp = Date.now().toString();
   const path = "/api/v2/mix/order/place-plan-order";
   const PRICE_DP = { BTCUSDT: 1, ETHUSDT: 2, SOLUSDT: 3, HYPEUSDT: 3 };
-  const SIZE_DP  = { BTCUSDT: 4, ETHUSDT: 2, SOLUSDT: 1 };
+  const SIZE_DP  = { BTCUSDT: 4, ETHUSDT: 2, SOLUSDT: 1, HYPEUSDT: 2 };
   const priceDp  = PRICE_DP[symbol] ?? 2;
   const sizeDp   = SIZE_DP[symbol]  ?? 4;
   const side     = holdSide === "long" ? "sell" : "buy";
@@ -1057,12 +1057,12 @@ async function placePlanOrder(symbol, holdSide, triggerPrice, size) {
     marginCoin:   "USDT",
     size:         size.toFixed(sizeDp),
     side,
-    holdSide,                             // required — tells BitGet which position to close
+    holdSide,
     tradeSide:    "close",
-    orderType:    "market",               // market fill on trigger — guaranteed execution
+    orderType:    "market",
     triggerPrice: triggerPrice.toFixed(priceDp),
     triggerType:  "mark_price",
-    planType:     "profit_plan",
+    planType:     "normal_plan",          // "profit_plan" is invalid — correct type is normal_plan
   });
   const sig = signBitGet(timestamp, "POST", path, body);
   const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
@@ -1077,7 +1077,7 @@ async function placePlanOrder(symbol, holdSide, triggerPrice, size) {
     body,
   });
   const data = await res.json();
-  if (data.code !== "00000") throw new Error(`Plan TP order failed: ${data.msg}`);
+  if (data.code !== "00000") throw new Error(`TP1 plan order failed: ${data.msg}`);
   return data.data;
 }
 
@@ -1901,19 +1901,31 @@ async function run() {
                 }
               };
 
-              // TP1 — profit_plan order, closes exactly 50% of position.
-              // Uses place-plan-order (not place-tpsl-order) so it can coexist with TP2.
-              // Multiple profit_plan orders can be active simultaneously; pos_profit cannot.
+              // TP1 — normal_plan trigger order, closes exactly 50% of position.
               if (halfSize >= tpInc) {
                 await placePlanWithRetry("TP1", levels.takeProfit1, halfSize);
               } else {
                 console.log(`⚠️  TP1 skipped — position too small to split (${fullSize.toFixed(tpDec)} < 2 × ${tpInc})`);
               }
 
-              // TP2 — profit_plan order, closes the remaining 50%.
-              // If TP1 was skipped (too small), TP2 closes the full position instead.
-              const tp2Size = halfSize >= tpInc ? halfSize : fullSize;
-              await placePlanWithRetry("TP2", levels.takeProfit2, tp2Size);
+              // TP2 — pos_profit TPSL, closes entire remaining position.
+              // Uses place-tpsl-order (same reliable endpoint as SL) with no size —
+              // closes 100% of whatever remains after TP1. If TP1 hit first, that's
+              // 50%. If TP1 was skipped, that's 100%. Either way position fully exits.
+              try {
+                await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit2, undefined);
+                console.log(`✅ TP2 SET — $${levels.takeProfit2.toFixed(priceDp)} (pos_profit TPSL — closes entire remaining position)`);
+              } catch (firstErr) {
+                console.log(`⚠️  TP2 first attempt failed: ${firstErr.message} — retrying in 2s`);
+                await new Promise((r) => setTimeout(r, 2000));
+                try {
+                  await placeTpslOrder(symbol, holdSide, "pos_profit", levels.takeProfit2, undefined);
+                  console.log(`✅ TP2 SET (retry) — $${levels.takeProfit2.toFixed(priceDp)}`);
+                } catch (retryErr) {
+                  console.log(`❌ TP2 FAILED after retry: ${retryErr.message} — SET MANUALLY`);
+                  logEntry.tp2Error = retryErr.message;
+                }
+              }
             }
           } catch (err) {
             console.log(`❌ ORDER FAILED — ${err.message}`);
