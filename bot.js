@@ -903,8 +903,8 @@ async function setFuturesLeverage(symbol, leverage, holdSide) {
   const body = JSON.stringify({
     symbol,
     productType: "usdt-futures",
-    marginCoin: "USDT",
-    lever: leverage,
+    marginCoin:  "USDT",
+    lever:       String(leverage),   // BitGet expects a string, not a number
     holdSide,
   });
   const sig = signBitGet(timestamp, "POST", path, body);
