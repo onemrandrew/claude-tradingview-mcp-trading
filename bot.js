@@ -876,20 +876,15 @@ function scoreSwing(c4h, c1d, direction) {
 }
 
 // ─── Trade Limits ─────────────────────────────────────────────────────────────
+// Daily cap removed — per-symbol 2-hour cooldown is the primary re-entry guard.
+// With score ≥ 85 threshold + 2h cooldown + circuit breaker (3 consecutive SLs),
+// the strategy naturally limits frequency without an artificial daily ceiling.
 
 function checkTradeLimits(log) {
   console.log("\n── Trade Limits ─────────────────────────────────────────\n");
   const todayCount = countTodaysTrades(log);
-
-  if (todayCount >= CONFIG.maxTradesPerDay) {
-    console.log(`🚫 Max trades per day reached: ${todayCount}/${CONFIG.maxTradesPerDay}`);
-    return false;
-  }
-  console.log(`✅ Trades today: ${todayCount}/${CONFIG.maxTradesPerDay} — within limit`);
-
-  // 10% of portfolio per trade, capped at maxTradeSizeUSD (matches run() logic)
-  const tradeSize = Math.min(CONFIG.portfolioValue * 0.10, CONFIG.maxTradeSizeUSD);
-  console.log(`✅ Trade size: $${tradeSize.toFixed(2)} — within max $${CONFIG.maxTradeSizeUSD}`);
+  console.log(`✅ Trades today: ${todayCount} — no daily cap (2h per-symbol cooldown active)`);
+  console.log(`✅ Max trade size: $${CONFIG.maxTradeSizeUSD}`);
   return true;
 }
 
