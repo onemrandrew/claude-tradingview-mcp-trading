@@ -40,7 +40,7 @@ function checkOnboarding() {
       "PORTFOLIO_VALUE_USD=1000",
       "MAX_TRADE_SIZE_USD=100",
       "MAX_TRADES_PER_DAY=3",
-      "MAX_LEVERAGE=3",
+      "MAX_LEVERAGE=4",
       "PAPER_TRADING=true",
       "SYMBOL=BTCUSDT",
       "TIMEFRAME=4H",
@@ -1368,13 +1368,15 @@ function volAdjustedTradeSize(portfolioValue, stopDistancePct, leverage, maxUSD,
   return Math.min(margin, maxUSD);
 }
 
-// Confidence-based leverage selector (per rules.json)
+// Confidence-based leverage selector — minimum 2x for all trades.
+// Swing, day_trade, and scalp all floor at 2x. Higher confidence unlocks more.
+// Final value is capped by CONFIG.maxLeverage (MAX_LEVERAGE env var).
 function leverageForStyle(style, score) {
-  // Matches rules.json exactly: scalp 3x | day_trade 2x | swing 1x
-  // Score 90+: full tier. Score 80–89: one step lower (min 1x).
-  const styleMax = { scalp: 3, day_trade: 2, swing: 1 }[style] ?? 1;
-  const reduced  = score < 90 ? Math.max(1, styleMax - 1) : styleMax;
-  return Math.min(reduced, CONFIG.maxLeverage);
+  let lev;
+  if      (score >= 90) lev = 4;   // high conviction — full amplification
+  else if (score >= 85) lev = 3;   // good edge — moderate leverage
+  else                  lev = 2;   // minimum — always beats spot
+  return Math.min(lev, CONFIG.maxLeverage);
 }
 
 // ─── Tax CSV ──────────────────────────────────────────────────────────────────

@@ -15,18 +15,19 @@
   },
 
   "leverage": {
-    "max_leverage": 3,
-    "by_style": {
-      "scalp": 3,
-      "day_trade": 2,
-      "swing": 1
+    "max_leverage": 4,
+    "by_confidence": {
+      "score_70_to_84": 2,
+      "score_85_to_89": 3,
+      "score_90_plus":  4
     },
     "rules": [
-      "Never exceed MAX_LEVERAGE=3 set in .env under any circumstances",
-      "Leverage is applied to the leveraged position size, not the account — risk per trade remains capped at 1.5% of portfolio regardless of leverage",
-      "If confidence score is exactly 80 (minimum threshold), use the lower leverage for that style",
-      "If confidence score is 90 or above, full leverage for that style may be applied",
-      "Swing trades use 1x leverage — swing positions are held for days and compounding overnight risk does not justify higher leverage"
+      "Never exceed MAX_LEVERAGE=4 set in .env under any circumstances",
+      "Minimum leverage is 2x for all trades — 1x is economically equivalent to spot and provides no amplification",
+      "Leverage scales with confidence: 2x (score <85), 3x (score 85-89), 4x (score 90+)",
+      "All styles (swing, day_trade, scalp) use the same confidence-tiered scheme — style no longer dictates leverage",
+      "Position sizing is margin-based: margin = MAX_TRADE_SIZE_USD ($100), notional = margin × leverage",
+      "ATR-based SLs exit well before liquidation: liquidation at 4x requires a 25% move; SL fires at ~3-6%"
     ]
   },
 
@@ -130,9 +131,9 @@
     "swing": {
       "timeframe": "4H",
       "confirmation_timeframe": "1D",
-      "leverage": 1,
+      "leverage": "2-4x (confidence-tiered)",
       "typical_hold_time": "1 to 14 days",
-      "description": "Higher timeframe setups held for days. 1x leverage only — swing trades are exposed to overnight risk and do not require leverage to be profitable at this scale.",
+      "description": "Higher timeframe setups held for days. Leverage is confidence-tiered: 2x (score <85), 3x (score 85-89), 4x (score 90+). ATR-based SLs exit well before liquidation risk.",
       "indicators": {
         "ema_21_4h": "Fast trend on 4H.",
         "ema_55_4h": "Slow trend on 4H. Crossover is the swing entry signal.",
