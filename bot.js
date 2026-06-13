@@ -768,12 +768,7 @@ function scoreDayTrade(c1h, c4h, direction) {
     return { score: 0, direction: null, conditions: [], atr: atr14_1h, price, style: "day_trade" };
   }
 
-  // ADX filter: skip day_trade in ranging 1H markets (same logic as scalp on 5m)
   const adx1h = calcADX(c1h, 14);
-  if (adx1h && adx1h.adx < 20) {
-    console.log(`⚠️  ADX(14) on 1H = ${adx1h.adx.toFixed(1)} < 20 — ranging market, skip day_trade`);
-    return { score: 0, direction, conditions: [], atr: atr14_1h, price, style: "day_trade" };
-  }
 
   const conditions = [];
   const check = (label, pass) => conditions.push({ label, pass: !!pass });
@@ -781,25 +776,25 @@ function scoreDayTrade(c1h, c4h, direction) {
   if (direction === "long") {
     check("Price above 200 EMA on 4H (macro bullish)",      ema200_4h && price > ema200_4h);
     check("EMA 21 ≥ EMA 55 on 1H",                          cross1h === "bullish" || cross1h === "above");
-    check("RSI(14) below 30 on 1H (oversold-ish)",          rsi14_1h !== null && rsi14_1h < 30);
+    check("RSI(14) below 45 on 1H (pullback in uptrend)",   rsi14_1h !== null && rsi14_1h < 45);
     check("MACD histogram positive on 1H",                  macd_1h && macd_1h.histogram > 0);
     check("Volume above 20-period MA on 1H",                volOK);
     check("4H candle closed bullish",                        last4h && last4h.close > last4h.open);
     check("Higher high and higher low on 1H",                struct1h && struct1h.higherHigh && struct1h.higherLow);
     check("Price above EMA 21 on 1H",                        ema21_1h && price > ema21_1h);
     check("4H RSI(14) above 50",                             rsi14_4h !== null && rsi14_4h > 50);
-    check("EMA 21 above EMA 55 on 4H",                       ema21_4h && ema55_4h && ema21_4h > ema55_4h);
+    check("ADX(14) ≥ 20 on 1H (trending market)",           adx1h && adx1h.adx >= 20);
   } else {
     check("Price below 200 EMA on 4H (macro bearish)",      ema200_4h && price < ema200_4h);
     check("EMA 21 ≤ EMA 55 on 1H",                          cross1h === "bearish" || cross1h === "below");
-    check("RSI(14) above 70 on 1H (overbought-ish)",        rsi14_1h !== null && rsi14_1h > 70);
+    check("RSI(14) above 55 on 1H (rally in downtrend)",    rsi14_1h !== null && rsi14_1h > 55);
     check("MACD histogram negative on 1H",                  macd_1h && macd_1h.histogram < 0);
     check("Volume above 20-period MA on 1H",                volOK);
     check("4H candle closed bearish",                        last4h && last4h.close < last4h.open);
     check("Lower high and lower low on 1H",                  struct1h && struct1h.lowerHigh && struct1h.lowerLow);
     check("Price below EMA 21 on 1H",                        ema21_1h && price < ema21_1h);
     check("4H RSI(14) below 50",                             rsi14_4h !== null && rsi14_4h < 50);
-    check("EMA 21 below EMA 55 on 4H",                       ema21_4h && ema55_4h && ema21_4h < ema55_4h);
+    check("ADX(14) ≥ 20 on 1H (trending market)",           adx1h && adx1h.adx >= 20);
   }
 
   return {
@@ -835,12 +830,7 @@ function scoreSwing(c4h, c1d, direction) {
     return { score: 0, direction: null, conditions: [], atr: atr14_4h, price, style: "swing" };
   }
 
-  // ADX filter: skip swing in ranging 4H markets (same pattern as scalp/day_trade)
   const adx4h = calcADX(c4h, 14);
-  if (adx4h && adx4h.adx < 20) {
-    console.log(`⚠️  ADX(14) on 4H = ${adx4h.adx.toFixed(1)} < 20 — ranging market, skip swing`);
-    return { score: 0, direction, conditions: [], atr: atr14_4h, price, style: "swing" };
-  }
 
   const conditions = [];
   const check = (label, pass) => conditions.push({ label, pass: !!pass });
@@ -848,25 +838,25 @@ function scoreSwing(c4h, c1d, direction) {
   if (direction === "long") {
     check("Price above 200 EMA on Daily (macro bull)",      ema200_1d && price > ema200_1d);
     check("EMA 21 ≥ EMA 55 on 4H",                          cross4h === "bullish" || cross4h === "above");
-    check("RSI(14) below 30 on 4H (pullback in trend)",    rsi14_4h !== null && rsi14_4h < 30);
+    check("RSI(14) below 45 on 4H (pullback in uptrend)",  rsi14_4h !== null && rsi14_4h < 45);
     check("MACD histogram positive on 4H",                  macd_4h && macd_4h.histogram > 0);
     check("Volume above 20-period MA on 4H",                volOK);
     check("Price above Bollinger middle band (trend bias bullish)", bb_4h && price > bb_4h.middle);
     check("Higher high and higher low on 4H",                struct4h && struct4h.higherHigh && struct4h.higherLow);
     check("Price above EMA 21 on 4H",                        ema21_4h && price > ema21_4h);
     check("Daily candle closed above prior day's high",      last1d && prev1d && last1d.close > prev1d.high);
-    check("EMA 21 above EMA 55 on Daily",                    ema21_1d && ema55_1d && ema21_1d > ema55_1d);
+    check("ADX(14) ≥ 20 on 4H (trending market)",           adx4h && adx4h.adx >= 20);
   } else {
     check("Price below 200 EMA on Daily (macro bear)",      ema200_1d && price < ema200_1d);
     check("EMA 21 ≤ EMA 55 on 4H",                          cross4h === "bearish" || cross4h === "below");
-    check("RSI(14) above 70 on 4H (rally in downtrend)",   rsi14_4h !== null && rsi14_4h > 70);
+    check("RSI(14) above 55 on 4H (rally in downtrend)",   rsi14_4h !== null && rsi14_4h > 55);
     check("MACD histogram negative on 4H",                  macd_4h && macd_4h.histogram < 0);
     check("Volume above 20-period MA on 4H",                volOK);
     check("Price below Bollinger middle band (trend bias bearish)", bb_4h && price < bb_4h.middle);
     check("Lower high and lower low on 4H",                  struct4h && struct4h.lowerHigh && struct4h.lowerLow);
     check("Price below EMA 21 on 4H",                        ema21_4h && price < ema21_4h);
     check("Daily candle closed below prior day's low",       last1d && prev1d && last1d.close < prev1d.low);
-    check("EMA 21 below EMA 55 on Daily",                    ema21_1d && ema55_1d && ema21_1d < ema55_1d);
+    check("ADX(14) ≥ 20 on 4H (trending market)",           adx4h && adx4h.adx >= 20);
   }
 
   return {
@@ -877,7 +867,7 @@ function scoreSwing(c4h, c1d, direction) {
 
 // ─── Trade Limits ─────────────────────────────────────────────────────────────
 // Daily cap removed — per-symbol 2-hour cooldown is the primary re-entry guard.
-// With score ≥ 85 threshold + 2h cooldown + circuit breaker (3 consecutive SLs),
+// With score ≥ 80 threshold + 2h cooldown + circuit breaker (3 consecutive SLs),
 // the strategy naturally limits frequency without an artificial daily ceiling.
 
 function checkTradeLimits(log) {
@@ -1674,7 +1664,7 @@ async function run() {
   // To re-enable scalp: change railway.json cronSchedule to "*/5 * * * *" (every 5 min).
   // Backtest-derived thresholds:
   //   Shorts need more conviction — positive edge but materially weaker than longs.
-  const SHORT_THRESHOLD = CONFIDENCE_THRESHOLD + 5; // 90 at default 85 base
+  const SHORT_THRESHOLD = CONFIDENCE_THRESHOLD; // longs and shorts use the same bar
 
   let qualifying = allSetups.filter((s) => {
     if (s.style === "scalp") return false;  // disabled — hourly cron, stale 5m signals

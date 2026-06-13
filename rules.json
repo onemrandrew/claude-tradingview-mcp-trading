@@ -32,7 +32,7 @@
   },
 
   "confidence_threshold": {
-    "minimum_to_trade": 85,
+    "minimum_to_trade": 80,
     "description": "Each of the 10 conditions per timeframe is worth 10 points. Score below 80 = no trade. The bot evaluates all three timeframes and takes the highest-scoring setup if it clears 80. If two timeframes both clear 80, the higher-scoring one wins."
   },
 
