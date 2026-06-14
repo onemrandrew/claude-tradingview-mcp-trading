@@ -267,32 +267,30 @@ function scoreDayTrade(c1h, c4h, direction) {
   if (atrBase1h && atr14_1h && atr14_1h > atrBase1h * 3)
     return { score: 0, direction: null, conditions: [], atr: atr14_1h, price, style: "day_trade" };
   const adx1h = calcADX(c1h, 14);
-  if (adx1h && adx1h.adx < 20)
-    return { score: 0, direction, conditions: [], atr: atr14_1h, price, style: "day_trade" };
 
   const conds = [], chk = (l, p) => conds.push({ label: l, pass: !!p });
   if (direction === "long") {
     chk("Price above 200 EMA on 4H",         ema200_4h && price > ema200_4h);
     chk("EMA 21 ≥ EMA 55 on 1H",             cross1h === "bullish" || cross1h === "above");
-    chk("RSI(14) below 30 on 1H",            rsi14_1h !== null && rsi14_1h < 30);
+    chk("RSI(14) below 45 on 1H",            rsi14_1h !== null && rsi14_1h < 45);
     chk("MACD histogram positive on 1H",     macd_1h && macd_1h.histogram > 0);
     chk("Volume above 20-period MA on 1H",   volOK);
     chk("4H candle closed bullish",          last4h && last4h.close > last4h.open);
     chk("Higher high and higher low on 1H",  struct1h && struct1h.higherHigh && struct1h.higherLow);
     chk("Price above EMA 21 on 1H",          ema21_1h && price > ema21_1h);
     chk("4H RSI(14) above 50",               rsi14_4h !== null && rsi14_4h > 50);
-    chk("EMA 21 above EMA 55 on 4H",         ema21_4h && ema55_4h && ema21_4h > ema55_4h);
+    chk("ADX(14) ≥ 20 on 1H",                adx1h && adx1h.adx >= 20);
   } else {
     chk("Price below 200 EMA on 4H",         ema200_4h && price < ema200_4h);
     chk("EMA 21 ≤ EMA 55 on 1H",             cross1h === "bearish" || cross1h === "below");
-    chk("RSI(14) above 70 on 1H",            rsi14_1h !== null && rsi14_1h > 70);
+    chk("RSI(14) above 55 on 1H",            rsi14_1h !== null && rsi14_1h > 55);
     chk("MACD histogram negative on 1H",     macd_1h && macd_1h.histogram < 0);
     chk("Volume above 20-period MA on 1H",   volOK);
     chk("4H candle closed bearish",          last4h && last4h.close < last4h.open);
     chk("Lower high and lower low on 1H",    struct1h && struct1h.lowerHigh && struct1h.lowerLow);
     chk("Price below EMA 21 on 1H",          ema21_1h && price < ema21_1h);
     chk("4H RSI(14) below 50",               rsi14_4h !== null && rsi14_4h < 50);
-    chk("EMA 21 below EMA 55 on 4H",         ema21_4h && ema55_4h && ema21_4h < ema55_4h);
+    chk("ADX(14) ≥ 20 on 1H",                adx1h && adx1h.adx >= 20);
   }
   return { score: conds.filter(c => c.pass).length * 10, conditions: conds, atr: atr14_1h, price, style: "day_trade" };
 }
@@ -317,32 +315,30 @@ function scoreSwing(c4h, c1d, direction) {
   if (atrBase4h && atr14_4h && atr14_4h > atrBase4h * 3)
     return { score: 0, direction: null, conditions: [], atr: atr14_4h, price, style: "swing" };
   const adx4h = calcADX(c4h, 14);
-  if (adx4h && adx4h.adx < 20)
-    return { score: 0, direction, conditions: [], atr: atr14_4h, price, style: "swing" };
 
   const conds = [], chk = (l, p) => conds.push({ label: l, pass: !!p });
   if (direction === "long") {
     chk("Price above 200 EMA on Daily",      ema200_1d && price > ema200_1d);
     chk("EMA 21 ≥ EMA 55 on 4H",             cross4h === "bullish" || cross4h === "above");
-    chk("RSI(14) below 30 on 4H",            rsi14_4h !== null && rsi14_4h < 30);
+    chk("RSI(14) below 45 on 4H",            rsi14_4h !== null && rsi14_4h < 45);
     chk("MACD histogram positive on 4H",     macd_4h && macd_4h.histogram > 0);
     chk("Volume above 20-period MA on 4H",   volOK);
     chk("Price above Bollinger middle",      bb_4h && price > bb_4h.middle);
     chk("Higher high and higher low on 4H",  struct4h && struct4h.higherHigh && struct4h.higherLow);
     chk("Price above EMA 21 on 4H",          ema21_4h && price > ema21_4h);
     chk("Daily candle above prior high",     last1d && prev1d && last1d.close > prev1d.high);
-    chk("EMA 21 above EMA 55 on Daily",      ema21_1d && ema55_1d && ema21_1d > ema55_1d);
+    chk("ADX(14) ≥ 20 on 4H",                adx4h && adx4h.adx >= 20);
   } else {
     chk("Price below 200 EMA on Daily",      ema200_1d && price < ema200_1d);
     chk("EMA 21 ≤ EMA 55 on 4H",             cross4h === "bearish" || cross4h === "below");
-    chk("RSI(14) above 70 on 4H",            rsi14_4h !== null && rsi14_4h > 70);
+    chk("RSI(14) above 55 on 4H",            rsi14_4h !== null && rsi14_4h > 55);
     chk("MACD histogram negative on 4H",     macd_4h && macd_4h.histogram < 0);
     chk("Volume above 20-period MA on 4H",   volOK);
     chk("Price below Bollinger middle",      bb_4h && price < bb_4h.middle);
     chk("Lower high and lower low on 4H",    struct4h && struct4h.lowerHigh && struct4h.lowerLow);
     chk("Price below EMA 21 on 4H",          ema21_4h && price < ema21_4h);
     chk("Daily candle below prior low",      last1d && prev1d && last1d.close < prev1d.low);
-    chk("EMA 21 below EMA 55 on Daily",      ema21_1d && ema55_1d && ema21_1d < ema55_1d);
+    chk("ADX(14) ≥ 20 on 4H",                adx4h && adx4h.adx >= 20);
   }
   return { score: conds.filter(c => c.pass).length * 10, conditions: conds, atr: atr14_4h, price, style: "swing" };
 }
@@ -515,7 +511,7 @@ async function runBacktest() {
       }
 
       // Backtest-derived thresholds: shorts and ETH need more conviction.
-      const SHORT_THRESHOLD = THRESHOLD + 5;
+      const SHORT_THRESHOLD = THRESHOLD;       // shorts use same bar as longs (matches live)
       const ETH_THRESHOLD   = THRESHOLD + 5;
 
       // Pick best qualifying setup (swing preferred on score ties ≤10pts)

@@ -867,7 +867,7 @@ function scoreSwing(c4h, c1d, direction) {
 
 // ─── Trade Limits ─────────────────────────────────────────────────────────────
 // Daily cap removed — per-symbol 2-hour cooldown is the primary re-entry guard.
-// With score ≥ 80 threshold + 2h cooldown + circuit breaker (3 consecutive SLs),
+// With score ≥ 85 threshold + 2h cooldown + circuit breaker (3 consecutive SLs),
 // the strategy naturally limits frequency without an artificial daily ceiling.
 
 function checkTradeLimits(log) {

@@ -32,8 +32,8 @@
   },
 
   "confidence_threshold": {
-    "minimum_to_trade": 80,
-    "description": "Each of the 10 conditions per timeframe is worth 10 points. Score below 80 = no trade. The bot evaluates all three timeframes and takes the highest-scoring setup if it clears 80. If two timeframes both clear 80, the higher-scoring one wins."
+    "minimum_to_trade": 85,
+    "description": "Each of the 10 conditions per timeframe is worth 10 points. Score below 85 = no trade. Backtest (2024-01 → 2026-06, BTC+SOL): threshold 85 with ADX-scored logic = +0.378R expectancy / +190R / Sharpe 4.26; dropping to 80 diluted edge to +0.245R and deepened drawdown. The bot evaluates all three timeframes and takes the highest-scoring setup clearing 85."
   },
 
   "trade_styles": {
