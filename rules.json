@@ -33,7 +33,11 @@
 
   "confidence_threshold": {
     "minimum_to_trade": 85,
-    "description": "Each of the 10 conditions per timeframe is worth 10 points. Score below 85 = no trade. Backtest (2024-01 → 2026-06, BTC+SOL): threshold 85 with ADX-scored logic = +0.378R expectancy / +190R / Sharpe 4.26; dropping to 80 diluted edge to +0.245R and deepened drawdown. The bot evaluates all three timeframes and takes the highest-scoring setup clearing 85."
+    "by_style": {
+      "day_trade": 95,
+      "swing": 85
+    },
+    "description": "Scores are decile-quantized (10 conditions × 10 pts), so a setup scores 80/90/100 — never 85. A min of 85 therefore means 'requires 90+'; a min of 95 means 'requires a perfect 100'. Per-style config (backtest-validated 'C', net of 0.16% costs): day_trade demands a perfect 100 (its tight 1H stops magnify fee drag, so only the highest-conviction setups clear the hurdle); swing trusts 90+. Result: ~doubled net expectancy (+0.194R → +0.355R) and halved max drawdown (-13.9R → -7.3R) vs a flat 85, and held up out-of-sample on 2023 (+0.498R, Sharpe 6.41). Fewer trades, much higher quality."
   },
 
   "trade_styles": {
