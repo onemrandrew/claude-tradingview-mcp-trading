@@ -46,6 +46,38 @@ const TP2_MULT = flag("--tp2") ? parseFloat(flag("--tp2")) : 4.0; // 4.0 = live 
 //   fees alone; add ~0.0004 slippage on market fills → ~0.0016 realistic. Default 0
 //   (gross) to preserve prior behaviour. Converted to R per-trade from actual stop dist.
 const COST_RT = flag("--cost") ? parseFloat(flag("--cost")) : 0;
+// Per-style minimum score overrides (default to global THRESHOLD if unset).
+const DT_MIN    = flag("--dt-min")    ? parseInt(flag("--dt-min"), 10)    : null;
+const SWING_MIN = flag("--swing-min") ? parseInt(flag("--swing-min"), 10) : null;
+// --max-concurrent N : portfolio-heat cap. Skip an entry if N positions are already
+//   open across ALL symbols at that moment. 0/unset = unlimited (prior behaviour).
+const MAX_CONCURRENT = flag("--max-concurrent") ? parseInt(flag("--max-concurrent"), 10) : 0;
+
+// Greatest number of positions open simultaneously across all symbols (no cap).
+function peakConcurrency(allTrades) {
+  const ev = [];
+  for (const t of allTrades) { ev.push([t.entryMs, 1]); ev.push([t.exitMs, -1]); }
+  ev.sort((a, b) => a[0] - b[0] || a[1] - b[1]); // process closes before opens at same ts
+  let cur = 0, peak = 0;
+  for (const [, d] of ev) { cur += d; if (cur > peak) peak = cur; }
+  return peak;
+}
+
+// Drop entries that would exceed `maxOpen` concurrent positions (chronological, greedy).
+// Approximates live: a capped symbol simply doesn't take that setup. Conservative on
+// trade count (doesn't re-derive signals freed up by skipping), but correct on the
+// drawdown clusters the cap is meant to prevent.
+function applyHeatCap(allTrades, maxOpen) {
+  const sorted = [...allTrades].sort((a, b) => a.entryMs - b.entryMs);
+  const kept = [], openExits = [];
+  for (const t of sorted) {
+    for (let k = openExits.length - 1; k >= 0; k--) if (openExits[k] <= t.entryMs) openExits.splice(k, 1);
+    if (openExits.length >= maxOpen) continue;
+    kept.push(t);
+    openExits.push(t.exitMs);
+  }
+  return kept;
+}
 
 const FROM_ISO = flag("--from") || "2023-01-01";
 const TO_ISO   = flag("--to")   || new Date().toISOString().slice(0, 10);
@@ -517,7 +549,7 @@ async function runBacktest() {
 
   // ── 2. Walk-forward simulation ───────────────────────────────────────────
   console.log("Running simulation...\n");
-  const trades = [];
+  let trades = [];
 
   for (const sym of SYMBOLS) {
     const { h1, h4, d1 } = raw[sym];
@@ -564,7 +596,10 @@ async function runBacktest() {
         .filter(s => {
           if (s.direction === "short" && s.score < SHORT_THRESHOLD) return false;
           if (sym === "ETHUSDT"       && s.score < ETH_THRESHOLD)   return false;
-          return s.score >= THRESHOLD;
+          const styleMin = s.style === "day_trade" && DT_MIN    != null ? DT_MIN
+                         : s.style === "swing"     && SWING_MIN != null ? SWING_MIN
+                         : THRESHOLD;
+          return s.score >= styleMin;
         })
         .sort((a, b) =>
           Math.abs(a.score - b.score) <= 10
@@ -595,6 +630,8 @@ async function runBacktest() {
 
       trades.push({
         ts:        new Date(ts).toISOString(),
+        entryMs:   ts,
+        exitMs:    ts + result.barsHeld * 60 * 60 * 1000,
         symbol:    sym,
         style:     best.style,
         direction: best.direction,
@@ -619,6 +656,19 @@ async function runBacktest() {
   if (trades.length === 0) {
     console.log("\n⚠️  No trades generated. Try a lower --threshold or wider --from date.");
     return;
+  }
+
+  // Chronological order across ALL symbols — required for a true portfolio equity
+  // curve / drawdown (trades were pushed grouped by symbol, not by time).
+  trades.sort((a, b) => a.entryMs - b.entryMs);
+
+  const peakOpen = peakConcurrency(trades);
+  if (MAX_CONCURRENT > 0) {
+    const before = trades.length;
+    trades = applyHeatCap(trades, MAX_CONCURRENT);
+    console.log(`\n⚖️  Heat cap ${MAX_CONCURRENT}: kept ${trades.length}/${before} trades (peak concurrency uncapped was ${peakOpen}).`);
+  } else {
+    console.log(`\n📈 Peak concurrent positions (uncapped): ${peakOpen}`);
   }
 
   // ── 3. Metrics ───────────────────────────────────────────────────────────

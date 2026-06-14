@@ -1714,7 +1714,18 @@ async function run() {
     return b.score - a.score;
   });
 
-  const chosen = qualifying[0] || null;
+  // Portfolio-heat cap: never hold more than N concurrent positions across all symbols.
+  // Crypto alts are highly correlated — without this, a market-wide dump can open many
+  // losing positions at once. Backtest (8 symbols, config C, 2024-26): peak concurrency
+  // was 3, so cap 3 matches uncapped return (+302R) while bounding any future worse
+  // cluster. True chronological portfolio drawdown at this size is ~19R (-$94 on $500).
+  const MAX_CONCURRENT_POSITIONS = rules.max_concurrent_positions
+    ?? parseInt(process.env.MAX_CONCURRENT_POSITIONS ?? "3", 10);
+  let chosen = qualifying[0] || null;
+  if (chosen && openSymbols.size >= MAX_CONCURRENT_POSITIONS) {
+    console.log(`⚖️  Heat cap: ${openSymbols.size} positions already open (max ${MAX_CONCURRENT_POSITIONS}) — skipping new entry this run`);
+    chosen = null;
+  }
   const allPass = !!chosen;
 
   // Best non-qualifying setup — used for logging when no trade fires
