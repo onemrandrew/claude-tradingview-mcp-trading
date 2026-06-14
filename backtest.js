@@ -35,6 +35,9 @@ const symbolFlags = args.reduce((acc, v, i) => (v === "--symbol" && args[i+1] ? 
 if (symbolFlags.length > 0) SYMBOLS = symbolFlags;
 if (flag("--style"))     STYLES    = [flag("--style")];
 if (flag("--threshold")) THRESHOLD = parseInt(flag("--threshold"), 10);
+// --trail N : trail the runner half by N×ATR after TP1 (no TP2 cap, floored at breakeven).
+//             Omit or 0 = control behaviour (breakeven stop + TP2 cap).
+const TRAIL_ATR = flag("--trail") ? parseFloat(flag("--trail")) : 0;
 
 const FROM_ISO = flag("--from") || "2023-01-01";
 const TO_ISO   = flag("--to")   || new Date().toISOString().slice(0, 10);
@@ -400,38 +403,63 @@ function isNewsBlackout(tsMs) {
 //   Expired after TP1         : +0.75R  (remaining half closed at BE — conservative)
 //   Expired flat              :  0.00R  (neither SL nor TP1 hit, close at entry)
 
-function simulateTrade(direction, entryPrice, levels, futureCandles, style) {
+function simulateTrade(direction, entryPrice, levels, futureCandles, style, trailAtrMult = 0) {
   const { stopLoss: sl, takeProfit1: tp1, takeProfit2: tp2 } = levels;
   const maxBars = style === "swing" ? 240 : 96; // 10 days swing / 4 days day_trade
-  let tp1Hit = false;
+  const sign    = direction === "long" ? 1 : -1;
+  const R       = Math.abs(entryPrice - sl);           // 1R in price terms = actual stop distance
+  const atrDist = Math.abs(tp1 - entryPrice) / 3.0;    // tp1 is 3×ATR by construction
+  const trailD  = trailAtrMult * atrDist;
+  // R contribution of closing `frac` of the position at price p
+  const rOf = (p, frac) => frac * sign * (p - entryPrice) / R;
+  const TP1_R = rOf(tp1, 0.5);                          // booked when the first half exits
 
-  for (let j = 0; j < Math.min(maxBars, futureCandles.length); j++) {
+  let tp1Hit = false;
+  let peak   = entryPrice;                              // best price reached since TP1 (high for long, low for short)
+  const n = Math.min(maxBars, futureCandles.length);
+
+  for (let j = 0; j < n; j++) {
     const c = futureCandles[j];
-    if (direction === "long") {
-      if (!tp1Hit) {
-        if (c.low  <= sl)  return { outcome: "SL",        pnl: -1.00, barsHeld: j + 1 };
-        if (c.high >= tp2) return { outcome: "TP2",       pnl: +3.00, barsHeld: j + 1 }; // gap through TP1
-        if (c.high >= tp1) { tp1Hit = true; continue; }
+    if (!tp1Hit) {
+      // Pre-TP1: original stop and targets. Gap straight through TP1 → full close at TP2.
+      if (direction === "long") {
+        if (c.low  <= sl)  return { outcome: "SL",  pnl: -1.00,          barsHeld: j + 1 };
+        if (c.high >= tp2) return { outcome: "TP2", pnl: rOf(tp2, 1.0),  barsHeld: j + 1 };
+        if (c.high >= tp1) { tp1Hit = true; peak = c.high; continue; }
       } else {
-        if (c.low  <= entryPrice) return { outcome: "TP1_BE",  pnl: +0.75, barsHeld: j + 1 };
-        if (c.high >= tp2)        return { outcome: "TP1_TP2", pnl: +2.25, barsHeld: j + 1 };
+        if (c.high >= sl)  return { outcome: "SL",  pnl: -1.00,          barsHeld: j + 1 };
+        if (c.low  <= tp2) return { outcome: "TP2", pnl: rOf(tp2, 1.0),  barsHeld: j + 1 };
+        if (c.low  <= tp1) { tp1Hit = true; peak = c.low; continue; }
+      }
+    } else if (trailAtrMult > 0) {
+      // Runner half: trailing stop floored at breakeven, NO upper cap. peak excludes this
+      // bar's extreme (updated after the check) to avoid intrabar lookahead.
+      if (direction === "long") {
+        const trailStop = Math.max(peak - trailD, entryPrice);
+        if (c.low <= trailStop) return { outcome: "TP1_TRAIL", pnl: TP1_R + rOf(trailStop, 0.5), barsHeld: j + 1 };
+        if (c.high > peak) peak = c.high;
+      } else {
+        const trailStop = Math.min(peak + trailD, entryPrice);
+        if (c.high >= trailStop) return { outcome: "TP1_TRAIL", pnl: TP1_R + rOf(trailStop, 0.5), barsHeld: j + 1 };
+        if (c.low < peak) peak = c.low;
       }
     } else {
-      if (!tp1Hit) {
-        if (c.high >= sl)  return { outcome: "SL",        pnl: -1.00, barsHeld: j + 1 };
-        if (c.low  <= tp2) return { outcome: "TP2",       pnl: +3.00, barsHeld: j + 1 };
-        if (c.low  <= tp1) { tp1Hit = true; continue; }
+      // Control runner: breakeven stop + TP2 cap.
+      if (direction === "long") {
+        if (c.low  <= entryPrice) return { outcome: "TP1_BE",  pnl: TP1_R,                 barsHeld: j + 1 };
+        if (c.high >= tp2)        return { outcome: "TP1_TP2", pnl: TP1_R + rOf(tp2, 0.5), barsHeld: j + 1 };
       } else {
-        if (c.high >= entryPrice) return { outcome: "TP1_BE",  pnl: +0.75, barsHeld: j + 1 };
-        if (c.low  <= tp2)        return { outcome: "TP1_TP2", pnl: +2.25, barsHeld: j + 1 };
+        if (c.high >= entryPrice) return { outcome: "TP1_BE",  pnl: TP1_R,                 barsHeld: j + 1 };
+        if (c.low  <= tp2)        return { outcome: "TP1_TP2", pnl: TP1_R + rOf(tp2, 0.5), barsHeld: j + 1 };
       }
     }
   }
 
-  const barsHeld = Math.min(maxBars, futureCandles.length);
-  return tp1Hit
-    ? { outcome: "TP1_EXPIRED", pnl: +0.75, barsHeld } // locked TP1, remainder at BE
-    : { outcome: "EXPIRED",     pnl:  0.00, barsHeld }; // flat exit — neither triggered
+  const barsHeld = n;
+  if (!tp1Hit) return { outcome: "EXPIRED", pnl: 0.00, barsHeld }; // neither SL nor TP1 hit
+  // Expired after TP1: close the runner at the last available close.
+  const lastClose = futureCandles[n - 1].close;
+  return { outcome: "TP1_EXPIRED", pnl: TP1_R + rOf(lastClose, 0.5), barsHeld };
 }
 
 // ─── Binary search: last candle with time <= targetMs ─────────────────────────
@@ -547,7 +575,7 @@ async function runBacktest() {
 
       // Simulate forward on 1H candles
       const future = h1.slice(i + 1);
-      const result = simulateTrade(best.direction, entry, levels, future, best.style);
+      const result = simulateTrade(best.direction, entry, levels, future, best.style, TRAIL_ATR);
 
       trades.push({
         ts:        new Date(ts).toISOString(),
