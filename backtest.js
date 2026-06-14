@@ -38,6 +38,14 @@ if (flag("--threshold")) THRESHOLD = parseInt(flag("--threshold"), 10);
 // --trail N : trail the runner half by N×ATR after TP1 (no TP2 cap, floored at breakeven).
 //             Omit or 0 = control behaviour (breakeven stop + TP2 cap).
 const TRAIL_ATR = flag("--trail") ? parseFloat(flag("--trail")) : 0;
+// TP1/TP2 ATR multiples — overridable for target sweeps. Defaults match live bot.
+const TP1_MULT = flag("--tp1") ? parseFloat(flag("--tp1")) : 3.0;
+const TP2_MULT = flag("--tp2") ? parseFloat(flag("--tp2")) : 4.0; // 4.0 = live default (swept winner)
+// --cost F : round-trip cost as fraction of notional (fees+slippage). Each trade turns
+//   over ~2× notional (entry 100% + exits 100%). BitGet taker = 0.06%/side → 0.0012
+//   fees alone; add ~0.0004 slippage on market fills → ~0.0016 realistic. Default 0
+//   (gross) to preserve prior behaviour. Converted to R per-trade from actual stop dist.
+const COST_RT = flag("--cost") ? parseFloat(flag("--cost")) : 0;
 
 const FROM_ISO = flag("--from") || "2023-01-01";
 const TO_ISO   = flag("--to")   || new Date().toISOString().slice(0, 10);
@@ -349,10 +357,10 @@ function scoreSwing(c4h, c1d, direction) {
 function computeLevels(direction, entry, atr, style) {
   // day_trade: 2.5× SL — 1H candles are wick-prone; wider stop survives stop hunts.
   // swing:     2.0× SL — 4H candles are smoother, tighter stop is fine.
-  // R:R is identical across styles: TP1 = 1.5× SL distance, TP2 = 3.0× SL distance.
+  // TP1/TP2 ATR multiples overridable via --tp1 / --tp2 for sweeps (default 3.0 / 6.0).
   const mult = style === "day_trade"
-    ? { sl: 2.5, tp1: 3.0, tp2: 6.0 }   // wider SL, original TP levels — better wick survival
-    : { sl: 2.0, tp1: 3.0, tp2: 6.0 };
+    ? { sl: 2.5, tp1: TP1_MULT, tp2: TP2_MULT }
+    : { sl: 2.0, tp1: TP1_MULT, tp2: TP2_MULT };
   return direction === "long"
     ? { stopLoss: entry - mult.sl * atr, takeProfit1: entry + mult.tp1 * atr, takeProfit2: entry + mult.tp2 * atr }
     : { stopLoss: entry + mult.sl * atr, takeProfit1: entry - mult.tp1 * atr, takeProfit2: entry - mult.tp2 * atr };
@@ -404,11 +412,19 @@ function isNewsBlackout(tsMs) {
 //   Expired flat              :  0.00R  (neither SL nor TP1 hit, close at entry)
 
 function simulateTrade(direction, entryPrice, levels, futureCandles, style, trailAtrMult = 0) {
+  const r = simulateTradeRaw(direction, entryPrice, levels, futureCandles, style, trailAtrMult);
+  if (COST_RT <= 0) return r;
+  // Round-trip fees+slippage in R: cost on notional ÷ dollar risk = COST_RT × entry ÷ stop distance.
+  const feeR = COST_RT * entryPrice / Math.abs(entryPrice - levels.stopLoss);
+  return { ...r, pnl: r.pnl - feeR };
+}
+
+function simulateTradeRaw(direction, entryPrice, levels, futureCandles, style, trailAtrMult = 0) {
   const { stopLoss: sl, takeProfit1: tp1, takeProfit2: tp2 } = levels;
   const maxBars = style === "swing" ? 240 : 96; // 10 days swing / 4 days day_trade
   const sign    = direction === "long" ? 1 : -1;
   const R       = Math.abs(entryPrice - sl);           // 1R in price terms = actual stop distance
-  const atrDist = Math.abs(tp1 - entryPrice) / 3.0;    // tp1 is 3×ATR by construction
+  const atrDist = Math.abs(tp1 - entryPrice) / TP1_MULT; // back out ATR from tp1 distance
   const trailD  = trailAtrMult * atrDist;
   // R contribution of closing `frac` of the position at price p
   const rOf = (p, frac) => frac * sign * (p - entryPrice) / R;

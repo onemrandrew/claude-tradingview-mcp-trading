@@ -1083,14 +1083,15 @@ function computeLevels(direction, entryPrice, atr, style) {
   // day_trade uses 2.5× SL (vs 2.0× swing) — 1H candles are more prone to stop-hunt
   // wicks that briefly pierce a 2× stop before reversing. TPs scale proportionally
   // so R:R is unchanged: TP1 = 1.5× SL distance, TP2 = 3.0× SL distance.
+  // TP2 pulled in from 6.0 → 4.0×ATR. Backtest (BTC+SOL 2024-26, price-accurate,
+  // net of 0.16% costs): TP2=4.0 gave +0.266R gross / Sharpe 3.59 vs 6.0's +0.258R / 3.28.
+  // The edge is pullback mean-reversion — moves rarely extend to 6×ATR, so the far cap
+  // mostly expired the runner. Sweep was a smooth plateau at 3.5–4.0 (not a knife-edge).
   const mult = style === "scalp"
-    ? { sl: 1.5, tp1: 2.25, tp2: 4.5 }  // scalp
+    ? { sl: 1.5, tp1: 2.25, tp2: 4.5 }  // scalp — untested (disabled), left as-is
     : style === "day_trade"
-    ? { sl: 2.5, tp1: 3.0,  tp2: 6.0 }  // day_trade — wider SL survives 1H wicks;
-                                          // TPs kept at original ATR distance so they're
-                                          // relatively closer (easier to hit). Backtest:
-                                          // Sharpe 4.53, win rate 53.4%, +0.406R expectancy
-    : { sl: 2.0, tp1: 3.0,  tp2: 6.0 }; // swing — 4H candles, less wick-prone
+    ? { sl: 2.5, tp1: 3.0,  tp2: 4.0 }  // day_trade — wider SL survives 1H wicks
+    : { sl: 2.0, tp1: 3.0,  tp2: 4.0 }; // swing — 4H candles, less wick-prone
 
   if (direction === "long") {
     return {
