@@ -1642,10 +1642,13 @@ async function run() {
 
   // Scan all symbols (skip any that already have an open position)
   const CONFIDENCE_THRESHOLD = rules.confidence_threshold?.minimum_to_trade ?? 85;
-  // Per-style minimum score (backtest-validated config "C"). Scores are decile-quantized
-  // (conditions × 10), so 95 = "perfect 100 only", 85 = "90+ qualifies". day_trade demands
-  // a perfect setup; swing trusts 90+. Net of costs this ~doubled expectancy and halved
-  // drawdown vs a flat 85, and held up out-of-sample on 2023 (Sharpe 6.41).
+  // Per-style minimum score. Scores are decile-quantized (conditions × 10), so 95 =
+  // "perfect 100 only", 85 = "90+ qualifies".
+  // ⚠️ THIS BOT IS EFFECTIVELY SWING-ONLY: day_trade=95 requires a perfect 100, which a
+  // day_trade setup has NEVER reached in 2.5y of backtest (8 symbols) — so day_trade never
+  // fires; its scores still log for visibility. Swing (90+) is the validated engine:
+  // 427 trades, +0.343R net, Sharpe 4.08, max DD -$93 on $500 (8 symbols, cap 3).
+  // To re-enable day_trade, set its by_style threshold to 85 (thin +0.17R edge, deeper DD).
   const STYLE_THRESHOLDS = rules.confidence_threshold?.by_style ?? {};
   const minScoreFor = (style) => STYLE_THRESHOLDS[style] ?? CONFIDENCE_THRESHOLD;
   const allSetups = [];

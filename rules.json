@@ -38,7 +38,7 @@
       "day_trade": 95,
       "swing": 85
     },
-    "description": "Scores are decile-quantized (10 conditions × 10 pts), so a setup scores 80/90/100 — never 85. A min of 85 therefore means 'requires 90+'; a min of 95 means 'requires a perfect 100'. Per-style config (backtest-validated 'C', net of 0.16% costs): day_trade demands a perfect 100 (its tight 1H stops magnify fee drag, so only the highest-conviction setups clear the hurdle); swing trusts 90+. Result: ~doubled net expectancy (+0.194R → +0.355R) and halved max drawdown (-13.9R → -7.3R) vs a flat 85, and held up out-of-sample on 2023 (+0.498R, Sharpe 6.41). Fewer trades, much higher quality."
+    "description": "Scores are decile-quantized (10 conditions × 10 pts), so a setup scores 80/90/100 — never 85. A min of 85 means 'requires 90+'; a min of 95 means 'requires a perfect 100'. IMPORTANT — THIS BOT IS EFFECTIVELY SWING-ONLY: day_trade is set to 95 (perfect 100), but a day_trade setup has NEVER reached 100 in 2.5 years of backtest across 8 symbols (its 10 conditions have mild internal tension — RSI<45 'dip' vs HH/HL 'strength' — so they essentially never all align). So day_trade is de-facto disabled; its scores still log for visibility. Swing (90+) is the validated engine. Verified config (swing, 8 symbols, net 0.16% costs, max 3 concurrent): 427 trades, +0.343R expectancy, Sharpe 4.08, +147R, max DD -18.6R (-$93 on $500). Held up out-of-sample on 2023. To actually run day_trade, lower its threshold to 85 (=90+) — but it's a thin +0.17R edge with deeper drawdown."
   },
 
   "trade_styles": {
