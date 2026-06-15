@@ -2,4 +2,5 @@
 *.log
 safety-check-log.json
 trades.csv
+backtest_*.csv
 node_modules/

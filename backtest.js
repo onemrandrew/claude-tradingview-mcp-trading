@@ -38,6 +38,10 @@ if (flag("--threshold")) THRESHOLD = parseInt(flag("--threshold"), 10);
 // --trail N : trail the runner half by N×ATR after TP1 (no TP2 cap, floored at breakeven).
 //             Omit or 0 = control behaviour (breakeven stop + TP2 cap).
 const TRAIL_ATR = flag("--trail") ? parseFloat(flag("--trail")) : 0;
+// --live-trail : model the ACTUAL live-bot runner exit — after TP1 the stop trails
+//   1.5×ATR behind the running peak of hourly closes, floored at breakeven, with the
+//   TP2 cap kept. (The --trail mode above removes the cap; this one matches production.)
+const LIVE_TRAIL = args.includes("--live-trail");
 // TP1/TP2 ATR multiples — overridable for target sweeps. Defaults match live bot.
 const TP1_MULT = flag("--tp1") ? parseFloat(flag("--tp1")) : 3.0;
 const TP2_MULT = flag("--tp2") ? parseFloat(flag("--tp2")) : 4.0; // 4.0 = live default (swept winner)
@@ -464,6 +468,7 @@ function simulateTradeRaw(direction, entryPrice, levels, futureCandles, style, t
 
   let tp1Hit = false;
   let peak   = entryPrice;                              // best price reached since TP1 (high for long, low for short)
+  let peakClose = entryPrice;                           // running peak of CLOSES since TP1 (live-trail model)
   const n = Math.min(maxBars, futureCandles.length);
 
   for (let j = 0; j < n; j++) {
@@ -473,11 +478,29 @@ function simulateTradeRaw(direction, entryPrice, levels, futureCandles, style, t
       if (direction === "long") {
         if (c.low  <= sl)  return { outcome: "SL",  pnl: -1.00,          barsHeld: j + 1 };
         if (c.high >= tp2) return { outcome: "TP2", pnl: rOf(tp2, 1.0),  barsHeld: j + 1 };
-        if (c.high >= tp1) { tp1Hit = true; peak = c.high; continue; }
+        if (c.high >= tp1) { tp1Hit = true; peak = c.high; peakClose = c.close; continue; }
       } else {
         if (c.high >= sl)  return { outcome: "SL",  pnl: -1.00,          barsHeld: j + 1 };
         if (c.low  <= tp2) return { outcome: "TP2", pnl: rOf(tp2, 1.0),  barsHeld: j + 1 };
-        if (c.low  <= tp1) { tp1Hit = true; peak = c.low; continue; }
+        if (c.low  <= tp1) { tp1Hit = true; peak = c.low; peakClose = c.close; continue; }
+      }
+    } else if (LIVE_TRAIL) {
+      // Production model: stop trails 1.5×ATR behind the running peak of hourly CLOSES
+      // (the bot samples mark price each hour and ratchets up), floored at breakeven;
+      // TP2 cap kept. Exit at whichever hits first. peakClose excludes the current bar's
+      // close (updated after the check) to avoid lookahead. Conservatively check the
+      // stop before TP2 within a bar.
+      const ltD = 1.5 * atrDist;
+      if (direction === "long") {
+        const trailStop = Math.max(entryPrice, peakClose - ltD);
+        if (c.low  <= trailStop) return { outcome: "TP1_TRAIL", pnl: TP1_R + rOf(trailStop, 0.5), barsHeld: j + 1 };
+        if (c.high >= tp2)       return { outcome: "TP1_TP2",   pnl: TP1_R + rOf(tp2, 0.5),       barsHeld: j + 1 };
+        if (c.close > peakClose) peakClose = c.close;
+      } else {
+        const trailStop = Math.min(entryPrice, peakClose + ltD);
+        if (c.high >= trailStop) return { outcome: "TP1_TRAIL", pnl: TP1_R + rOf(trailStop, 0.5), barsHeld: j + 1 };
+        if (c.low  <= tp2)       return { outcome: "TP1_TP2",   pnl: TP1_R + rOf(tp2, 0.5),       barsHeld: j + 1 };
+        if (c.close < peakClose) peakClose = c.close;
       }
     } else if (trailAtrMult > 0) {
       // Runner half: trailing stop floored at breakeven, NO upper cap. peak excludes this
