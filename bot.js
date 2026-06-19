@@ -914,8 +914,10 @@ async function setFuturesLeverage(symbol, leverage, holdSide) {
     symbol,
     productType: "usdt-futures",
     marginCoin:  "USDT",
-    lever:       String(leverage),   // BitGet expects a string, not a number
-    holdSide,
+    leverage:    String(leverage),   // param is "leverage" (string), NOT "lever" — the wrong
+                                     // name caused "Parameter leverage error" on every trade,
+                                     // so leverage was never actually set by the bot.
+    holdSide,                        // required for hedge-mode isolated margin
   });
   const sig = signBitGet(timestamp, "POST", path, body);
   const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
@@ -1057,6 +1059,9 @@ async function placePlanOrder(symbol, holdSide, triggerPrice, size) {
   const body = JSON.stringify({
     symbol,
     productType:  "usdt-futures",
+    marginMode:   "isolated",             // REQUIRED by place-plan-order — its omission was
+                                          // failing every TP1 with "margin mode cannot be empty";
+                                          // must match the entry order's isolated mode.
     marginCoin:   "USDT",
     size:         size.toFixed(sizeDp),
     side,
