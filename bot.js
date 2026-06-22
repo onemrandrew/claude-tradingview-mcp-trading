@@ -1238,6 +1238,24 @@ async function manageOpenPositions(open, log) {
       continue; // skip trailing stop — position is now closed
     }
 
+    // ── Swing / Day-Trade Max-Hold Exit ──────────────────────────────────────────
+    // The backtest force-closes positions at maxBars (swing 240 1H-bars = 240h/10d,
+    // day_trade 96 = 96h/4d). The live bot must match, or a position with no TP1/trail
+    // can drift indefinitely and freeze a heat-cap slot (e.g. a 5-day-old swing short
+    // tying up 1 of 3 slots). Closes whatever size remains at market once the age limit
+    // is reached, regardless of TP1 — mirrors the backtest's maxBars close.
+    const maxHoldHours = style === "swing" ? 240 : style === "day_trade" ? 96 : null;
+    if (maxHoldHours && ageHours > maxHoldHours) {
+      console.log(`⏱️  ${symbol}: ${style} reached max hold ${ageHours.toFixed(1)}h (cap ${maxHoldHours}h) — closing at market`);
+      try {
+        await closePositionAtMarket(symbol, holdSide, currentSize);
+        console.log(`✅ ${symbol}: Closed at market (max-hold time exit) @ ~$${markPrice.toFixed(2)}`);
+      } catch (err) {
+        console.log(`⚠️  ${symbol}: Max-hold exit failed — ${err.message}. Close manually.`);
+      }
+      continue; // skip trailing stop — position is now closed
+    }
+
     // ── Trailing Stop ──────────────────────────────────────────────────────────
     // Once TP1 is hit, ratchet the SL to (current price ∓ 1.5×ATR), floored at
     // entry price (breakeven). Only update if the new level is an improvement.
