@@ -1089,6 +1089,63 @@ async function placePlanOrder(symbol, holdSide, triggerPrice, size) {
   return data.data;
 }
 
+// Cancel a single plan order (normal_plan = TP1) by id.
+async function cancelPlanOrder(symbol, orderId, planType = "normal_plan") {
+  const timestamp = Date.now().toString();
+  const path = "/api/v2/mix/order/cancel-plan-order";
+  const body = JSON.stringify({ orderId, symbol, productType: "usdt-futures", marginCoin: "USDT", planType });
+  const sig  = signBitGet(timestamp, "POST", path, body);
+  const res  = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type":      "application/json",
+      "ACCESS-KEY":        CONFIG.bitget.apiKey,
+      "ACCESS-SIGN":       sig,
+      "ACCESS-TIMESTAMP":  timestamp,
+      "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+    },
+    body,
+  });
+  const data = await res.json();
+  if (data.code !== "00000") throw new Error(data.msg);
+  return data.data;
+}
+
+// Hygiene: cancel lingering TP1 (normal_plan) orders for symbols with NO open position.
+// SL (pos_loss) and TP2 (pos_profit) are position-attached TPSL that BitGet auto-cancels
+// on close; only the standalone normal_plan TP1 lingers. We keep TP1s for OPEN positions.
+async function cancelOrphanPlanOrders(openSymbols) {
+  if (!CONFIG.bitget.apiKey) return;
+  const timestamp = Date.now().toString();
+  const path = "/api/v2/mix/order/orders-plan-pending?productType=usdt-futures&planType=normal_plan";
+  const sig  = signBitGet(timestamp, "GET", path, "");
+  try {
+    const res  = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
+      headers: {
+        "ACCESS-KEY":        CONFIG.bitget.apiKey,
+        "ACCESS-SIGN":       sig,
+        "ACCESS-TIMESTAMP":  timestamp,
+        "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+      },
+    });
+    const data = await res.json();
+    if (data.code !== "00000") return;
+    const list = data.data?.entrustedList ?? data.data?.list ?? [];
+    const orphans = list.filter((o) => !openSymbols.has(o.symbol));
+    if (orphans.length === 0) return;
+    for (const o of orphans) {
+      try {
+        await cancelPlanOrder(o.symbol, o.orderId, "normal_plan");
+        console.log(`🧹 Cancelled orphan TP1 order — ${o.symbol} (no open position)`);
+      } catch (err) {
+        console.log(`⚠️  Could not cancel orphan TP1 on ${o.symbol}: ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.log(`⚠️  Orphan-order cleanup skipped: ${err.message}`);
+  }
+}
+
 // Compute SL / TP1 / TP2 prices from ATR, return as a structured object.
 // Rules (from rules.json):
 //   SL:  1.5 × ATR  below entry (long)  / above entry (short)
@@ -1634,6 +1691,9 @@ async function run() {
     // Run this before scanning so stalled scalps are closed before new ones are considered
     if (!CONFIG.paperTrading) {
       await manageOpenPositions(liveOpenPositions, log);
+      // Hygiene: cancel orphaned TP1 (normal_plan) orders left behind by positions that
+      // closed via SL/TP2/time-exit — those linger otherwise and accumulate over time.
+      await cancelOrphanPlanOrders(openSymbols);
     }
 
     // Resolve outcomes for trades whose positions are now closed.
