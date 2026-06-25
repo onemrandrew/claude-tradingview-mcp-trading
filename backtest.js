@@ -42,6 +42,21 @@ const TRAIL_ATR = flag("--trail") ? parseFloat(flag("--trail")) : 0;
 //   1.5×ATR behind the running peak of hourly closes, floored at breakeven, with the
 //   TP2 cap kept. (The --trail mode above removes the cap; this one matches production.)
 const LIVE_TRAIL = args.includes("--live-trail");
+// --btc-short-filter : block ALT shorts unless BTC is also bearish (4H close < 4H EMA200).
+//   Alts track BTC, so shorting a weak alt while BTC rallies tends to get squeezed out.
+const BTC_SHORT_FILTER = args.includes("--btc-short-filter");
+
+// Per-bar EMA series (same seeding as calcEMA), aligned to candles index.
+function emaSeries(candles, period) {
+  const p = Math.min(period, candles.length - 1);
+  const out = new Array(candles.length).fill(null);
+  if (candles.length <= p) return out;
+  let ema = candles.slice(0, p).reduce((a, c) => a + c.close, 0) / p;
+  out[p - 1] = ema;
+  const k = 2 / (p + 1);
+  for (let i = p; i < candles.length; i++) { ema = candles[i].close * k + ema * (1 - k); out[i] = ema; }
+  return out;
+}
 // TP1/TP2 ATR multiples — overridable for target sweeps. Defaults match live bot.
 const TP1_MULT = flag("--tp1") ? parseFloat(flag("--tp1")) : 3.0;
 const TP2_MULT = flag("--tp2") ? parseFloat(flag("--tp2")) : 4.0; // 4.0 = live default (swept winner)
@@ -570,6 +585,24 @@ async function runBacktest() {
   }
   console.log();
 
+  // BTC-trend short filter reference: BTC 4H series + per-bar EMA200. Load BTC if it
+  // isn't already in the watchlist being tested.
+  let btc4h = raw["BTCUSDT"]?.h4, btcEma200 = null;
+  if (BTC_SHORT_FILTER) {
+    if (!btc4h) {
+      process.stdout.write("  BTCUSDT (short-filter reference) 4H... ");
+      btc4h = await fetchHistoricalCandles("BTCUSDT", "4H", LOAD_FROM, TO_MS);
+      console.log(`${btc4h.length} bars`);
+    }
+    btcEma200 = emaSeries(btc4h, 200);
+  }
+  const btcBearishAt = (ts) => {
+    if (!btcEma200) return true;            // filter off → permissive
+    const i = lastIdxBefore(btc4h, ts);
+    if (i < 0 || btcEma200[i] == null) return true;
+    return btc4h[i].close < btcEma200[i];
+  };
+
   // ── 2. Walk-forward simulation ───────────────────────────────────────────
   console.log("Running simulation...\n");
   let trades = [];
@@ -619,6 +652,8 @@ async function runBacktest() {
         .filter(s => {
           if (s.direction === "short" && s.score < SHORT_THRESHOLD) return false;
           if (sym === "ETHUSDT"       && s.score < ETH_THRESHOLD)   return false;
+          // BTC-trend short filter: block alt shorts unless BTC is also bearish.
+          if (BTC_SHORT_FILTER && s.direction === "short" && sym !== "BTCUSDT" && !btcBearishAt(ts)) return false;
           const styleMin = s.style === "day_trade" && DT_MIN    != null ? DT_MIN
                          : s.style === "swing"     && SWING_MIN != null ? SWING_MIN
                          : THRESHOLD;

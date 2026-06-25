@@ -1,6 +1,7 @@
 {
   "watchlist": ["BTCUSDT", "SOLUSDT", "HYPEUSDT", "ADAUSDT", "BNBUSDT", "LINKUSDT", "XRPUSDT", "AVAXUSDT"],
   "max_concurrent_positions": 3,
+  "btc_short_filter": true,
   "default_timeframe": "4H",
 
   "strategy": {

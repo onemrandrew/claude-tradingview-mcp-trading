@@ -1767,10 +1767,30 @@ async function run() {
   //   Shorts need more conviction — positive edge but materially weaker than longs.
   const SHORT_THRESHOLD = CONFIDENCE_THRESHOLD; // longs and shorts use the same bar
 
+  // BTC-trend short filter (backtest-validated, in + out of sample): alts track BTC, so
+  // an alt short taken while BTC rallies tends to get squeezed out. Block alt shorts unless
+  // BTC's 4H close is below its 4H EMA200. Lifts short expectancy without touching longs or
+  // drawdown. Toggle via rules.btc_short_filter (default on).
+  const BTC_SHORT_FILTER = rules.btc_short_filter !== false;
+  let btcBearish = true; // permissive if the check can't run
+  if (BTC_SHORT_FILTER) {
+    try {
+      const btc4h   = await fetchCandles("BTCUSDT", "4H", 260);
+      const closes  = btc4h.map((c) => c.close);
+      const ema200  = calcEMA(closes, Math.min(200, closes.length - 1));
+      if (ema200) btcBearish = closes[closes.length - 1] < ema200;
+      console.log(`📐 BTC 4H ${btcBearish ? "BEARISH" : "bullish"} — alt shorts ${btcBearish ? "allowed" : "BLOCKED"} this run`);
+    } catch (err) {
+      console.log(`⚠️  BTC trend check failed (${err.message}) — allowing alt shorts this run`);
+    }
+  }
+
   let qualifying = allSetups.filter((s) => {
     if (s.style === "scalp") return false;  // disabled — hourly cron, stale 5m signals
     if (s.symbol === "ETHUSDT") return false; // permanently removed — poor backtest performance
     if (s.direction === "short" && s.score < SHORT_THRESHOLD) return false;
+    // BTC-trend short filter: block alt shorts when BTC isn't bearish (alts get squeezed).
+    if (BTC_SHORT_FILTER && s.direction === "short" && s.symbol !== "BTCUSDT" && !btcBearish) return false;
     return s.score >= minScoreFor(s.style);
   });
 
