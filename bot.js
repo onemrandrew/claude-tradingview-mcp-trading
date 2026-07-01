@@ -1210,6 +1210,34 @@ async function getOpenPositions() {
   }
 }
 
+// ─── Account Equity (BitGet) ──────────────────────────────────────────────────
+// Live equity for position sizing. A static PORTFOLIO_VALUE_USD drifts from
+// reality (found live: env said $500 while equity was $275 → every trade risked
+// ~1.8% instead of 1%, and risk-% RISES as equity falls). Sizing off real equity
+// de-risks in drawdowns and compounds as the account grows. Returns null on any
+// failure so the caller can fall back to the env var.
+async function fetchAccountEquity() {
+  const timestamp = Date.now().toString();
+  const path = "/api/v2/mix/account/accounts?productType=usdt-futures";
+  const sig = signBitGet(timestamp, "GET", path, "");
+  try {
+    const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
+      headers: {
+        "ACCESS-KEY":        CONFIG.bitget.apiKey,
+        "ACCESS-SIGN":       sig,
+        "ACCESS-TIMESTAMP":  timestamp,
+        "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+      },
+    });
+    const data = await res.json();
+    if (data.code !== "00000") return null;
+    const equity = parseFloat((data.data || [])[0]?.accountEquity);
+    return Number.isFinite(equity) && equity > 0 ? equity : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Close Position at Market ─────────────────────────────────────────────────
 // Used by the scalp time-exit: close the entire remaining position at market.
 async function closePositionAtMarket(symbol, holdSide, size) {
@@ -1654,6 +1682,20 @@ async function run() {
 
   const log = loadLog();
   trimLog(log, 500); // keep only last 500 entries — prevents unbounded growth
+
+  // Dynamic equity sizing: use REAL account equity, not the static env var.
+  // 1% risk is only 1% if the base is true. Env var remains the paper-mode value
+  // and the live fallback when the API call fails.
+  if (!CONFIG.paperTrading && CONFIG.tradeMode === "futures") {
+    const equity = await fetchAccountEquity();
+    if (equity) {
+      const drift = ((equity - CONFIG.portfolioValue) / CONFIG.portfolioValue * 100).toFixed(1);
+      console.log(`\n💰 Account equity: $${equity.toFixed(2)} (env said $${CONFIG.portfolioValue}, ${drift}% drift) — sizing off real equity`);
+      CONFIG.portfolioValue = equity;
+    } else {
+      console.log(`\n⚠️  Could not fetch account equity — falling back to PORTFOLIO_VALUE_USD ($${CONFIG.portfolioValue})`);
+    }
+  }
 
   // SAFEGUARD: Open position check — one position per symbol max (no stacking same symbol)
   console.log("\n── Open Position Check ──────────────────────────────────\n");
