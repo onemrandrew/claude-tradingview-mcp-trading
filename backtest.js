@@ -45,6 +45,9 @@ const LIVE_TRAIL = args.includes("--live-trail");
 // --btc-short-filter : block ALT shorts unless BTC is also bearish (4H close < 4H EMA200).
 //   Alts track BTC, so shorting a weak alt while BTC rallies tends to get squeezed out.
 const BTC_SHORT_FILTER = args.includes("--btc-short-filter");
+// --sl-cooldown N : after a full stop-out (outcome "SL"), extend the same-symbol
+//   re-entry buffer to N hours (default 2h buffer for all outcomes, matching live).
+const SL_COOLDOWN_H = flag("--sl-cooldown") ? parseFloat(flag("--sl-cooldown")) : 2;
 
 // Per-bar EMA series (same seeding as calcEMA), aligned to candles index.
 function emaSeries(candles, period) {
@@ -704,7 +707,8 @@ async function runBacktest() {
       });
 
       // Cooldown = hold duration + 2h buffer (prevents re-entry on same setup)
-      cooldownUntil = ts + (result.barsHeld + 2) * 60 * 60 * 1000;
+      const buffer = result.outcome === "SL" ? SL_COOLDOWN_H : 2;
+      cooldownUntil = ts + (result.barsHeld + buffer) * 60 * 60 * 1000;
       symTrades++;
     }
 
