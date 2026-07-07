@@ -70,6 +70,7 @@ const CONFIG = {
   maxTradeSizeUSD: parseFloat(process.env.MAX_TRADE_SIZE_USD  || "100"),
   maxTradesPerDay: parseInt(process.env.MAX_TRADES_PER_DAY    || "3"),
   maxLeverage:     parseInt(process.env.MAX_LEVERAGE          || "3"),
+  equityFloorUSD:  parseFloat(process.env.EQUITY_FLOOR_USD    || "200"),
   paperTrading:    process.env.PAPER_TRADING !== "false",
   tradeMode:       process.env.TRADE_MODE            || "futures",
   bitget: {
@@ -1686,12 +1687,19 @@ async function run() {
   // Dynamic equity sizing: use REAL account equity, not the static env var.
   // 1% risk is only 1% if the base is true. Env var remains the paper-mode value
   // and the live fallback when the API call fails.
+  let equityFloorBreached = false;
   if (!CONFIG.paperTrading && CONFIG.tradeMode === "futures") {
     const equity = await fetchAccountEquity();
     if (equity) {
       const drift = ((equity - CONFIG.portfolioValue) / CONFIG.portfolioValue * 100).toFixed(1);
       console.log(`\n💰 Account equity: $${equity.toFixed(2)} (env said $${CONFIG.portfolioValue}, ${drift}% drift) — sizing off real equity`);
       CONFIG.portfolioValue = equity;
+      // Equity floor: hard risk-governance brake. Below the floor the bot stops
+      // opening NEW positions until a human reviews (open positions still get
+      // trailing stops / time exits / cleanup — only entries halt). Unlike the
+      // 3-consecutive-SL circuit breaker (which any win resets), this is an
+      // absolute line that slow bleed cannot creep past unnoticed.
+      if (equity < CONFIG.equityFloorUSD) equityFloorBreached = true;
     } else {
       console.log(`\n⚠️  Could not fetch account equity — falling back to PORTFOLIO_VALUE_USD ($${CONFIG.portfolioValue})`);
     }
@@ -1746,6 +1754,14 @@ async function run() {
 
   if (!checkTradeLimits(log)) {
     console.log("\nBot stopping — trade limits reached for today.");
+    return;
+  }
+
+  // Equity floor: absolute halt on new entries below the configured floor.
+  if (equityFloorBreached) {
+    console.log(`\n🛑 EQUITY FLOOR — equity $${CONFIG.portfolioValue.toFixed(2)} is below the $${CONFIG.equityFloorUSD} floor.`);
+    console.log("   No new entries. Open positions are still managed (trailing stops / time exits).");
+    console.log("   Review the account, then raise EQUITY_FLOOR_USD or add funds to resume.");
     return;
   }
 
