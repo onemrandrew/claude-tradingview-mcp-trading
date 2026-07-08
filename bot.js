@@ -1581,7 +1581,7 @@ async function logToGoogleSheet(logEntry, bias, conditionsPassed, conditionsFail
   const webhookUrl = process.env.GOOGLE_SHEET_WEBHOOK;
   if (!webhookUrl) return;
   try {
-    await fetch(webhookUrl, {
+    const res = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1611,7 +1611,14 @@ async function logToGoogleSheet(logEntry, bias, conditionsPassed, conditionsFail
               : `Blocked: score ${logEntry.score}/100`,
       }),
     });
-    console.log("📊 Decision logged to Google Sheet");
+    // Apps Script replies 200 via a redirect on success. A non-200 (or "Page Not
+    // Found" after redirect) means the deployment is stale/unauthorized and the row
+    // was NOT appended — say so instead of claiming success on any non-throwing fetch.
+    if (res.ok) {
+      console.log("📊 Decision logged to Google Sheet");
+    } else {
+      console.log(`⚠️  Google Sheet webhook returned HTTP ${res.status} — row NOT logged. Redeploy the Apps Script (Deploy → Manage deployments → New version, access: Anyone) and update GOOGLE_SHEET_WEBHOOK if the URL changed.`);
+    }
   } catch (err) {
     console.log(`⚠️  Google Sheet log failed (non-critical): ${err.message}`);
   }
