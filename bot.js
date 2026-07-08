@@ -1583,6 +1583,7 @@ async function logToGoogleSheet(logEntry, bias, conditionsPassed, conditionsFail
   try {
     const res = await fetch(webhookUrl, {
       method: "POST",
+      redirect: "manual",   // judge the FIRST response — see comment below
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         timestamp:       ptDateTime(logEntry.timestamp),
@@ -1611,10 +1612,11 @@ async function logToGoogleSheet(logEntry, bias, conditionsPassed, conditionsFail
               : `Blocked: score ${logEntry.score}/100`,
       }),
     });
-    // Apps Script replies 200 via a redirect on success. A non-200 (or "Page Not
-    // Found" after redirect) means the deployment is stale/unauthorized and the row
-    // was NOT appended — say so instead of claiming success on any non-throwing fetch.
-    if (res.ok) {
+    // Apps Script semantics: doPost executes on the FIRST request and replies with a
+    // 302 redirect to an echo endpoint (following that redirect converts POST→GET and
+    // can 405 even on success — so don't follow it). First-response 302 or 200 =
+    // executed; anything else (404/405/HTML error) = deployment stale, row NOT logged.
+    if (res.status === 302 || res.ok) {
       console.log("📊 Decision logged to Google Sheet");
     } else {
       console.log(`⚠️  Google Sheet webhook returned HTTP ${res.status} — row NOT logged. Redeploy the Apps Script (Deploy → Manage deployments → New version, access: Anyone) and update GOOGLE_SHEET_WEBHOOK if the URL changed.`);
