@@ -144,7 +144,12 @@ async function fetchClosedPlanOrders(symbol, sinceMs) {
   const timestamp = Date.now().toString();
   const startTime = String(sinceMs);
   const endTime   = String(Date.now());
-  const path = `/api/v2/mix/order/plan-orders-history?symbol=${symbol}&productType=usdt-futures&startTime=${startTime}&endTime=${endTime}&pageSize=50`;
+  // NOTE: the endpoint is orders-plan-history — the previous path
+  // (plan-orders-history) does not exist and returned 40404, which the catch-all
+  // swallowed. Every closure then resolved as "closed_market", which the circuit
+  // breaker does not count as a loss — so the breaker could NEVER fire.
+  // planType=profit_loss returns the TPSL records (pos_loss = SL, pos_profit = TP).
+  const path = `/api/v2/mix/order/orders-plan-history?symbol=${symbol}&productType=usdt-futures&planType=profit_loss&startTime=${startTime}&endTime=${endTime}&limit=50`;
   const sig  = signBitGet(timestamp, "GET", path, "");
   try {
     const res  = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
@@ -197,7 +202,7 @@ async function inferTradeOutcomes(log, openPositionSymbols) {
 
         // "executed" is the triggered state on BitGet plan orders
         const executed  = planOrders.filter(
-          (o) => o.state === "executed" || o.status === "executed" || o.executeTime
+          (o) => o.planStatus === "executed" || o.state === "executed" || o.status === "executed" || o.executeTime
         );
         // SL: pos_loss TPSL | TP: profit_plan (new) or pos_profit (legacy)
         const slOrder   = executed.find((o) => o.planType === "pos_loss");
