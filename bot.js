@@ -216,6 +216,11 @@ async function inferTradeOutcomes(log, openPositionSymbols) {
           t.outcome = "closed_market";
           console.log(`📋 Outcome resolved: ${t.symbol} → closed at market (time-exit or manual)`);
         }
+
+        // Report the closure (with real net PnL from position history) to the
+        // Google Sheet so the Summary tab has outcome data to aggregate.
+        const rec = await fetchClosedPositionRecord(t.symbol, sinceMs);
+        await logTradeCloseToSheet(t, rec);
       } catch (err) {
         t.outcome = "closed_unknown";
         console.log(`⚠️  Could not resolve outcome for ${t.symbol}: ${err.message}`);
@@ -224,6 +229,62 @@ async function inferTradeOutcomes(log, openPositionSymbols) {
     changed = true;
   }
   return changed;
+}
+
+// Fetch the closed-position record (real net PnL after fees/funding) for a symbol
+// closed after sinceMs. Used to report trade closures to the Google Sheet summary.
+async function fetchClosedPositionRecord(symbol, sinceMs) {
+  const timestamp = Date.now().toString();
+  const path = `/api/v2/mix/position/history-position?productType=usdt-futures&symbol=${symbol}&startTime=${sinceMs}&endTime=${Date.now()}&limit=10`;
+  const sig  = signBitGet(timestamp, "GET", path, "");
+  try {
+    const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
+      headers: {
+        "ACCESS-KEY":        CONFIG.bitget.apiKey,
+        "ACCESS-SIGN":       sig,
+        "ACCESS-TIMESTAMP":  timestamp,
+        "ACCESS-PASSPHRASE": CONFIG.bitget.passphrase,
+      },
+    });
+    const data = await res.json();
+    if (data.code !== "00000") return null;
+    const list = (data.data?.list || []).filter((p) => p.symbol === symbol);
+    if (list.length === 0) return null;
+    return list.sort((a, b) => +b.utime - +a.utime)[0]; // most recently closed
+  } catch {
+    return null;
+  }
+}
+
+// Post a TRADE CLOSED row to the Google Sheet. The `net ±N.NN USDT` token in the
+// notes is machine-parseable — the sheet's Summary formulas REGEXEXTRACT it.
+async function logTradeCloseToSheet(t, rec) {
+  const webhookUrl = process.env.GOOGLE_SHEET_WEBHOOK;
+  if (!webhookUrl || !rec) return;
+  const net  = parseFloat(rec.netProfit);
+  const held = ((+rec.utime - +rec.ctime) / 3600000).toFixed(1);
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        timestamp:    ptDateTime(new Date(+rec.utime)),
+        symbol:       t.symbol,
+        timeframe:    t.style || "swing",
+        price:        parseFloat(rec.closeAvgPrice),
+        bias:         rec.holdSide,
+        style:        t.style || "swing",
+        confidence:   "",
+        allPass:      true,
+        tradeSize:    "",
+        leverage:     "",
+        paperTrading: false,
+        notes: `📕 TRADE CLOSED — ${rec.holdSide?.toUpperCase()} | entry ${rec.openAvgPrice} → exit ${rec.closeAvgPrice} | net ${net >= 0 ? "+" : ""}${net.toFixed(2)} USDT | held ${held}h | outcome ${t.outcome}`,
+      }),
+    });
+    if (res.status === 302 || res.ok) console.log(`📕 Trade closure logged to Sheet — ${t.symbol} net ${net >= 0 ? "+" : ""}${net.toFixed(2)}`);
+  } catch { /* non-critical */ }
 }
 
 // Circuit breaker: pause if the last N completed trades were all losses.
