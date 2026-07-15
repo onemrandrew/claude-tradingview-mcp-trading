@@ -2196,7 +2196,12 @@ async function run() {
   const passed = conds.filter((c) =>  c.pass).map((c) => c.label).join("; ");
   const failed = conds.filter((c) => !c.pass).map((c) => c.label).join("; ");
   const bias   = direction ?? "FLAT";
-  await logToGoogleSheet(logEntry, bias, passed, failed);
+  // Sheet gets SIGNAL rows only: executed trades, vetoes, and order errors.
+  // Hourly "no setup ≥ threshold" rows (24/day) drowned the sheet — that detail
+  // still lives in safety-check-log.json on the Railway volume.
+  if (logEntry.allPass || logEntry.vetoed || logEntry.error) {
+    await logToGoogleSheet(logEntry, bias, passed, failed);
+  }
 
   console.log("═══════════════════════════════════════════════════════════\n");
 }
