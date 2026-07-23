@@ -977,14 +977,16 @@ function signBitGet(timestamp, method, path, body = "") {
 async function setFuturesLeverage(symbol, leverage, holdSide) {
   const timestamp = Date.now().toString();
   const path = "/api/v2/mix/account/set-leverage";
+  // Account runs ISOLATED + HEDGE mode, which has separate per-side leverage
+  // (mirrors BitGet's "Adjust leverage" dialog with Long/Short sliders). The
+  // plain `leverage` param is documented for cross/one-way and proved unreliable
+  // here (LINK opened at stale leverage). Set BOTH sides explicitly in one call.
   const body = JSON.stringify({
     symbol,
-    productType: "usdt-futures",
-    marginCoin:  "USDT",
-    leverage:    String(leverage),   // param is "leverage" (string), NOT "lever" — the wrong
-                                     // name caused "Parameter leverage error" on every trade,
-                                     // so leverage was never actually set by the bot.
-    holdSide,                        // required for hedge-mode isolated margin
+    productType:   "usdt-futures",
+    marginCoin:    "USDT",
+    longLeverage:  String(leverage),
+    shortLeverage: String(leverage),
   });
   const sig = signBitGet(timestamp, "POST", path, body);
   const res = await fetch(`${CONFIG.bitget.baseUrl}${path}`, {
@@ -2101,9 +2103,9 @@ async function run() {
           console.log(`\n🔴 LIVE ORDER — ${chosen.style.toUpperCase()} ${direction.toUpperCase()} $${tradeSize.toFixed(2)} ${symbol} | ${leverage}x`);
           try {
             if (CONFIG.tradeMode === "futures") {
-              // Set leverage for both sides so no stale manual setting can override
-              await setFuturesLeverage(symbol, leverage, "long");
-              await setFuturesLeverage(symbol, leverage, "short");
+              // One call sets BOTH sides (longLeverage/shortLeverage) — mirrors
+              // the BitGet UI dialog; no stale manual setting can override.
+              await setFuturesLeverage(symbol, leverage);
             }
             const side  = direction === "long" ? "buy" : "sell";
             const order = await placeBitGetOrder(symbol, side, tradeSize, price, leverage);
