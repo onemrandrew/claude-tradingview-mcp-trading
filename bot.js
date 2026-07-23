@@ -2178,6 +2178,23 @@ async function run() {
                   logEntry.tp2Error = retryErr.message;
                 }
               }
+
+              // Execution verification: read back the ACTUAL position leverage and
+              // compare with intent. A silent set-leverage failure means the position
+              // runs at the account's stale per-symbol leverage — with margin-based
+              // sizing that's a wrong notional (found live: LINK at 2x vs intended 4x
+              // = half-sized position). Verify, don't assume.
+              try {
+                const posNow = await getOpenPositions();
+                const mine   = posNow.find((p) => p.symbol === symbol);
+                const actualLev = mine ? parseInt(mine.leverage, 10) : null;
+                if (actualLev && actualLev !== leverage) {
+                  console.log(`⚠️  LEVERAGE MISMATCH — intended ${leverage}x, position is at ${actualLev}x. Notional is ${actualLev}/${leverage} of plan. Check set-leverage for ${symbol}.`);
+                  logEntry.leverageActual = actualLev;
+                } else if (actualLev) {
+                  console.log(`✅ Leverage verified on position: ${actualLev}x`);
+                }
+              } catch { /* verification is best-effort */ }
             }
           } catch (err) {
             console.log(`❌ ORDER FAILED — ${err.message}`);
@@ -2193,7 +2210,13 @@ async function run() {
   saveLog(log);
   console.log(`\nDecision log saved → ${LOG_FILE}`);
 
-  writeTradeCsv(logEntry);
+  // CSV write must never block the sheet post below — a throw here previously
+  // killed the run tail (run().catch) and silently dropped the sheet row.
+  try {
+    writeTradeCsv(logEntry);
+  } catch (err) {
+    console.log(`⚠️  Trade CSV write failed (non-critical): ${err.message}`);
+  }
 
   // Use reference (best setup found, qualifying or not) so BLOCKED entries
   // show which conditions passed/failed instead of blank dashes.
