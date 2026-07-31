@@ -61,8 +61,11 @@ function emaSeries(candles, period) {
   return out;
 }
 // TP1/TP2 ATR multiples — overridable for target sweeps. Defaults match live bot.
-const TP1_MULT = flag("--tp1") ? parseFloat(flag("--tp1")) : 3.0;
+const TP1_MULT = flag("--tp1") ? parseFloat(flag("--tp1")) : 2.0; // 2.0 = live default (swept winner)
 const TP2_MULT = flag("--tp2") ? parseFloat(flag("--tp2")) : 4.0; // 4.0 = live default (swept winner)
+// --sl N : swing stop-loss ATR multiple (live default 2.0). Never swept for the
+//   swing-only config — a stop inside the chop band gets hit before TP1 is reached.
+const SL_MULT  = flag("--sl")  ? parseFloat(flag("--sl"))  : 2.0;
 // --cost F : round-trip cost as fraction of notional (fees+slippage). Each trade turns
 //   over ~2× notional (entry 100% + exits 100%). BitGet taker = 0.06%/side → 0.0012
 //   fees alone; add ~0.0004 slippage on market fills → ~0.0016 realistic. Default 0
@@ -413,8 +416,8 @@ function computeLevels(direction, entry, atr, style) {
   // swing:     2.0× SL — 4H candles are smoother, tighter stop is fine.
   // TP1/TP2 ATR multiples overridable via --tp1 / --tp2 for sweeps (default 3.0 / 6.0).
   const mult = style === "day_trade"
-    ? { sl: 2.5, tp1: TP1_MULT, tp2: TP2_MULT }
-    : { sl: 2.0, tp1: TP1_MULT, tp2: TP2_MULT };
+    ? { sl: 2.5,      tp1: TP1_MULT, tp2: TP2_MULT }
+    : { sl: SL_MULT,  tp1: TP1_MULT, tp2: TP2_MULT };
   return direction === "long"
     ? { stopLoss: entry - mult.sl * atr, takeProfit1: entry + mult.tp1 * atr, takeProfit2: entry + mult.tp2 * atr }
     : { stopLoss: entry + mult.sl * atr, takeProfit1: entry - mult.tp1 * atr, takeProfit2: entry - mult.tp2 * atr };

@@ -1227,15 +1227,22 @@ function computeLevels(direction, entryPrice, atr, style) {
   // day_trade uses 2.5× SL (vs 2.0× swing) — 1H candles are more prone to stop-hunt
   // wicks that briefly pierce a 2× stop before reversing. TPs scale proportionally
   // so R:R is unchanged: TP1 = 1.5× SL distance, TP2 = 3.0× SL distance.
-  // TP2 pulled in from 6.0 → 4.0×ATR. Backtest (BTC+SOL 2024-26, price-accurate,
-  // net of 0.16% costs): TP2=4.0 gave +0.266R gross / Sharpe 3.59 vs 6.0's +0.258R / 3.28.
-  // The edge is pullback mean-reversion — moves rarely extend to 6×ATR, so the far cap
-  // mostly expired the runner. Sweep was a smooth plateau at 3.5–4.0 (not a knife-edge).
+  // TP2 pulled in from 6.0 → 4.0×ATR (earlier sweep). TP1 then pulled in 3.0 → 2.0×ATR
+  // — validated in BOTH periods (8 symbols, swing-only, cap 3, net costs, live-trail):
+  //   2024-26 : +0.318R → +0.333R | Sharpe 3.76 → 5.00 | maxDD -18.97R → -9.31R
+  //   2023 OOS: +0.371R → +0.376R | Sharpe 4.87 → 6.30 | maxDD  -8.42R → -6.64R
+  // Improves every metric at once and HALVES drawdown. TP1=1.5 is past the peak
+  // (+0.297R — higher win rate, less money), so 2.0 is a true optimum.
+  // Widening the SL was tested and REJECTED (2.5×: +0.279R, 3.0×: +0.252R).
+  // Third confirmation that this edge is short-horizon mean reversion: bank early,
+  // move the stop to breakeven, let the runner ride.
+  // day_trade/scalp TP1 left at 3.0/2.25 — untested here (day_trade needs a perfect
+  // 100 and never fires; scalp is disabled).
   const mult = style === "scalp"
     ? { sl: 1.5, tp1: 2.25, tp2: 4.5 }  // scalp — untested (disabled), left as-is
     : style === "day_trade"
     ? { sl: 2.5, tp1: 3.0,  tp2: 4.0 }  // day_trade — wider SL survives 1H wicks
-    : { sl: 2.0, tp1: 3.0,  tp2: 4.0 }; // swing — 4H candles, less wick-prone
+    : { sl: 2.0, tp1: 2.0,  tp2: 4.0 }; // swing — TP1 pulled in 3.0→2.0×ATR (see below)
 
   if (direction === "long") {
     return {
